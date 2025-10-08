@@ -1,0 +1,32 @@
+# ===========================
+# PRODUCTION REQUIREMENTS v4.0
+# ===========================
+
+# Core Framework
+flask==3.0.0
+flask-cors==4.0.0
+flask-limiter==3.5.0
+
+# Azure Services
+azure-search-documents==11.4.0
+azure-core==1.30.0
+openai==1.35.0
+
+# HTTP Client (required by OpenAI SDK)
+httpx==0.27.0
+
+# Configuration Management
+python-dotenv==1.0.0
+
+# Production WSGI Server
+gunicorn==21.2.0
+
+# ===========================
+# OPTIONAL DEPENDENCIES
+# ===========================
+
+# Enhanced Logging (optional - provides JSON structured logging)
+# python-json-logger==2.0.7
+
+# Type Hints Support (optional - for older Python versions)
+# typing-extensions==4.9.0

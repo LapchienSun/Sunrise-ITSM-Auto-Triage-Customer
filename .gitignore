@@ -1,0 +1,8 @@
+backup/
+*.pyc
+__pycache__/
+.env
+*.log
+venv/
+helpers/
+docs/
