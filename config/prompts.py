@@ -19,6 +19,16 @@ def build_type_prompt(summary: str, description: str, call_source: str,
                       retrieved_records: list, type_options: list) -> str:
     """
     Build prompt for determining Type and Environment
+    
+    Args:
+        summary: Brief incident summary
+        description: Detailed incident description
+        call_source: Source of the request (Phone, Email, Portal, etc.)
+        retrieved_records: List of similar incidents from vector search
+        type_options: Valid type options (Incident, Service Request)
+        
+    Returns:
+        Formatted prompt string for type classification
     """
     record_hints = ""
     for i, record in enumerate(retrieved_records[:3], 1):
@@ -66,6 +76,16 @@ def build_product_prompt(summary: str, description: str, type_selected: str,
                          retrieved_records: list, product_options: list) -> str:
     """
     Build prompt for determining Product
+    
+    Args:
+        summary: Brief incident summary
+        description: Detailed incident description
+        type_selected: Previously selected type (Incident or Service Request)
+        retrieved_records: List of similar incidents from vector search
+        product_options: Valid product options for the selected type
+        
+    Returns:
+        Formatted prompt string for product selection
     """
     product_hints = []
     for record in retrieved_records[:5]:
@@ -119,6 +139,20 @@ def build_issue_priority_prompt_only(summary: str, description: str, type_select
                                 issue_precedence_override: str = None) -> str:
     """
     Issue selection, Priority calculation, and Context-Aware Clarifying Questions
+    
+    Args:
+        summary: Brief incident summary
+        description: Detailed incident description
+        type_selected: Previously selected type
+        product_selected: Previously selected product
+        retrieved_records: List of similar incidents from vector search
+        issue_options: Valid issue options for the selected type/product
+        priority_matrix: Priority matrix with urgency/impact rules
+        environment_selected: Test or Live environment (default: "Live")
+        issue_precedence_override: Optional issue to prioritize for special cases
+        
+    Returns:
+        Formatted prompt string for issue, priority, and questions generation
     """
     # Include resolution hints from similar incidents
     similar_issues = []
@@ -246,6 +280,13 @@ def build_enhanced_summary_prompt(summary: str, description: str) -> str:
     """
     Generate enhanced summary using ONLY user-provided data
     NO vector search results or similar incidents used
+    
+    Args:
+        summary: Original brief summary provided by user
+        description: Detailed description provided by user
+        
+    Returns:
+        Formatted prompt string for enhanced summary generation
     """
     return f"""Create an enhanced summary based solely on the provided information.
 
@@ -289,6 +330,21 @@ def build_analysis_prompt(summary: str, description: str, type_selected: str,
     """
     Root cause analysis, impact assessment, and initial response
     Updated for Demo Vector v2 index - now includes INCIDENTS, SERVICE REQUESTS, PROBLEMS, and KNOWLEDGE records
+    
+    Args:
+        summary: Brief incident summary
+        description: Detailed incident description
+        type_selected: Previously selected type
+        product_selected: Previously selected product
+        issue_selected: Previously selected issue
+        priority: Calculated priority (e.g., "1. Critical", "2. High")
+        environment: Test or Live environment
+        retrieved_records: List of similar records from vector search (all types)
+        key_insight_text: Optional key technical detail from top match
+        key_insight_source_id: Optional ID of the record containing key insight
+        
+    Returns:
+        Formatted prompt string for root cause analysis and initial response
     """
     resolution_hints = []
 
@@ -360,7 +416,7 @@ def build_analysis_prompt(summary: str, description: str, type_selected: str,
 
     prompt_sections.append(f"""
 # --- START: ACCURACY ENHANCEMENT RULES ---
-CRITICAL CONSTRAINT: You MUST only reference document IDs (e.g., INC000181, INC000181, PRB087681, KNB009761) that are explicitly provided in the 'SIMILAR INCIDENT RESOLUTIONS' section above. Do NOT invent, create, or refer to any other document ID.
+CRITICAL CONSTRAINT: You MUST only reference document IDs (e.g., INC000181, INC000245, PRB087681, KNB009761) that are explicitly provided in the 'SIMILAR INCIDENT RESOLUTIONS' section above. Do NOT invent, create, or refer to any other document ID.
 
 CRITICAL RELEVANCE CHECK: You are an experienced analyst. If a 'KEY TECHNICAL DETAIL' from a {key_insight_ticket_type} is provided, determine if it represents the same **class of problem** as the user's description. Look for:
 - **Same type of system/technology** (e.g., SQL Server jobs, import processes)
@@ -440,6 +496,16 @@ Return JSON:
 
 # Step 5a: Resolution Content Generation (Focused)
 def build_resolution_content_prompt(incident_details: dict, retrieved_records: list) -> str:
+    """
+    Generate comprehensive resolution content with implementation steps
+    
+    Args:
+        incident_details: Dictionary containing all classification and analysis results
+        retrieved_records: List of similar records from vector search (all types)
+        
+    Returns:
+        Formatted prompt string for resolution content generation
+    """
     logger = logging.getLogger(__name__)
     best_practices = []
     knowledge_articles = []  # Track knowledge articles separately for context
@@ -594,6 +660,14 @@ Return JSON:
 def format_resolution_html(incident_details: dict, resolution_content: dict) -> dict:
     """
     Format the resolution content into HTML - Done in Python, not AI.
+    
+    Args:
+        incident_details: Dictionary containing all classification and analysis results
+        resolution_content: Dictionary with implementation steps and resolution details
+        
+    Returns:
+        Dictionary containing formatted HTML strings for implementation plan,
+        suggested resolution, clarifying questions, and referenced documents
     """
     implementation_html = "<ol>"
     for step in resolution_content.get('implementation_steps', []):
@@ -642,6 +716,20 @@ def build_issue_priority_prompt(summary: str, description: str, type_selected: s
     """
     DEPRECATED: Use build_issue_priority_prompt_only instead
     This function now just calls the new one for backward compatibility
+    
+    Args:
+        summary: Brief incident summary
+        description: Detailed incident description
+        type_selected: Previously selected type
+        product_selected: Previously selected product
+        retrieved_records: List of similar incidents from vector search
+        issue_options: Valid issue options for the selected type/product
+        priority_matrix: Priority matrix with urgency/impact rules
+        environment_selected: Test or Live environment (default: "Live")
+        issue_precedence_override: Optional issue to prioritize for special cases
+        
+    Returns:
+        Formatted prompt string (delegates to build_issue_priority_prompt_only)
     """
     return build_issue_priority_prompt_only(
         summary, description, type_selected, product_selected, 
@@ -657,6 +745,17 @@ def build_user_prompt(summary: str, description: str, call_source: str,
     """
     Full monolithic prompt - maintaining for backward compatibility.
     This is the fallback if the optimized multi-step approach fails.
+    
+    Args:
+        summary: Brief incident summary
+        description: Detailed incident description
+        call_source: Source of the request (Phone, Email, Portal, etc.)
+        retrieved_records: List of similar incidents from vector search
+        categories: Categories object with type, product, and issue lists
+        priority_matrix: Priority matrix with urgency/impact rules
+        
+    Returns:
+        Comprehensive monolithic prompt string for full triage in one call
     """
     records_text = ""
     for i, record in enumerate(retrieved_records[:5], 1):

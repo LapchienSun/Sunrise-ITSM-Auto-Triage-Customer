@@ -1,33 +1,64 @@
 """
 ITSM Triage API v4.0 - Production Hardened Release
-Security: Authentication, rate limiting, input validation
-Performance: 3-4x faster with optimized processing
+
+A Flask-based REST API for intelligent IT service management incident triage using
+Azure OpenAI and Azure Cognitive Search with semantic vector search.
+
+Key Features:
+- Multi-step AI triage with prompt optimization (3-4x faster than v3)
+- Semantic vector search over incidents, problems, and knowledge articles
+- Comprehensive input validation and error handling
+- API key authentication with development mode bypass
+- Rate limiting with configurable limits per endpoint
+- ThreadPoolExecutor for concurrent operations
+- Graceful degradation and fallback mechanisms
+- Production-ready logging with flush handlers
+- ITSM-friendly JSON recovery for malformed requests
+
+Security:
+- API key authentication (X-API-Key header)
+- Rate limiting (configurable per endpoint)
+- Input validation with size limits
+- No internal error exposure in production
+- Secure localhost bypass only in development mode
+
+Performance:
+- Optimized 5-step triage process
+- Core issue extraction before embedding generation
+- Concurrent search operations where possible
+- Configurable ThreadPoolExecutor for parallel processing
+
+Version: 4.0
 """
+# Standard library imports
+import os
+import sys
+import logging
+import json
+import atexit
+from functools import wraps
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Any
+from concurrent.futures import ThreadPoolExecutor
+
+# Third-party imports
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from dotenv import load_dotenv
+
+# Local imports
 from config.config_manager import get_config_manager
 from config import constants
 from services.ai_service import AIService
 from services.search_service import SearchService
-from flask import Flask, request, jsonify, render_template, Blueprint, current_app
-from flask_cors import CORS
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any
-import os
-import logging
-from functools import wraps
-from concurrent.futures import ThreadPoolExecutor
-from dotenv import load_dotenv
-import json
-import atexit
 
 # Load environment variables IMMEDIATELY
 load_dotenv()
 
 # Configure logging with unbuffered output
-import sys
-
 # Print immediately to verify output is working
 print("=" * 80, flush=True)
 print("STARTING ITSM TRIAGE API - Loading Configuration...", flush=True)
@@ -60,7 +91,27 @@ print("", flush=True)
 # ===========================
 
 def require_api_key(f):
-    """API key authentication decorator with secure localhost bypass"""
+    """
+    API key authentication decorator with secure localhost bypass.
+    
+    Validates API key from X-API-Key header. In development mode (FLASK_ENV=development),
+    allows localhost connections without API key for easier testing.
+    
+    Args:
+        f: Flask route function to decorate
+        
+    Returns:
+        Decorated function with authentication check
+        
+    Responses:
+        401: Missing or invalid API key
+        500: API_KEY not configured in environment
+        
+    Security:
+        - Bypasses auth only for localhost in development mode
+        - Logs all authentication attempts
+        - Never exposes API key values in logs or responses
+    """
     @wraps(f)
     def decorated_function(*args, **kwargs):
         api_key = os.getenv("API_KEY")
@@ -241,8 +292,19 @@ class TriageRequest:
 
 def process_search_results(semantic_results, reference_results):
     """
-    Process search results to handle INCIDENT, PROBLEM, and KNOWLEDGE records
-    Sort by relevance score only - let semantic similarity determine priority
+    Consolidate and deduplicate search results from multiple sources.
+    
+    Combines semantic and reference search results, removes duplicates based on
+    incident_id, and sorts by search relevance score. All record types (INCIDENT,
+    PROBLEM, KNOWLEDGE) are treated equally - ranking determined purely by semantic
+    similarity.
+    
+    Args:
+        semantic_results: Results from semantic vector search
+        reference_results: Results from reference/knowledge search
+        
+    Returns:
+        List of deduplicated records sorted by @search.score descending
     """
     all_results = semantic_results + reference_results
     
@@ -263,7 +325,20 @@ def process_search_results(semantic_results, reference_results):
 
 def extract_key_insight_from_records(consolidated_records):
     """
-    Extract key insight from top result, prioritising KNOWLEDGE records
+    Extract key technical insight from the top-ranked search result.
+    
+    Uses the resolution text from the highest-scoring record as the key insight
+    for AI analysis. Properly labels the source based on record type (KNOWLEDGE,
+    PROBLEM, or INCIDENT).
+    
+    Args:
+        consolidated_records: List of search results sorted by relevance
+        
+    Returns:
+        Tuple of (key_insight_text, key_insight_source_id) or (None, None) if no records
+        
+    Note:
+        All record types are treated equally - selection based purely on search score
     """
     key_insight_text = None
     key_insight_source_id = None
@@ -293,8 +368,20 @@ def extract_key_insight_from_records(consolidated_records):
 
 def extract_referenced_documents(consolidated_records, max_docs=5):
     """
-    Extract document references from consolidated records
-    All records use incident_id field regardless of source_record type
+    Extract document IDs from search results for reference tracking.
+    
+    Collects incident_id values from top results for inclusion in the response.
+    These IDs are used for documentation and audit trails.
+    
+    Args:
+        consolidated_records: List of search results
+        max_docs: Maximum number of document IDs to extract (default: 5)
+        
+    Returns:
+        List of document ID strings (e.g., ['SUN123456', 'PRB789012', 'KB456789'])
+        
+    Note:
+        All record types use the incident_id field regardless of source_record type
     """
     referenced_doc_ids = []
     for record in consolidated_records[:max_docs]:
@@ -309,7 +396,26 @@ def extract_referenced_documents(consolidated_records, max_docs=5):
 # ===========================
 
 def create_app():
-    """Application factory"""
+    """
+    Application factory for Flask app with full initialization.
+    
+    Creates and configures the Flask application with:
+    - CORS support
+    - Rate limiting with configurable storage
+    - Environment variable validation
+    - AI service initialization (Azure OpenAI)
+    - Search service initialization (Azure Cognitive Search)
+    - ThreadPoolExecutor for concurrent operations
+    - Route and error handler registration
+    - Graceful shutdown handlers
+    
+    Returns:
+        Configured Flask application instance
+        
+    Raises:
+        RuntimeError: If required environment variables are missing or
+                     if services fail to initialize
+    """
     app = Flask(__name__)
     CORS(app)
 
@@ -426,7 +532,18 @@ def create_app():
 # ===========================
 
 def register_routes(app):
-    """Register all routes with the app"""
+    """
+    Register all API routes with the Flask application.
+    
+    Registers the following endpoints:
+    - GET  /health: Health check with index statistics
+    - POST /api/v2/triage: Main triage endpoint (rate-limited, authenticated)
+    - POST /api/v2/search-recent: Recent incidents search (rate-limited, authenticated)
+    - GET  /api/v2/index-stats: Vector index statistics (rate-limited, authenticated)
+    
+    Args:
+        app: Flask application instance
+    """
 
     @app.route("/health", methods=["GET"])
     def health():
@@ -553,7 +670,10 @@ def register_routes(app):
             # ADDED: Extract core issue before creating embeddings for better similarity matching
             try:
                 extracted_description = app.ai_service.extract_core_issue(triage_request.description)
-                logger.info(f"Description extraction - Original: {len(triage_request.description)} chars, Extracted: {len(extracted_description)} chars")
+                logger.info(
+                    f"Description extraction - Original: {len(triage_request.description)} chars, "
+                    f"Extracted: {len(extracted_description)} chars"
+                )
                 
                 # Use extracted description for embeddings and query text
                 query_text = f"{triage_request.summary} {extracted_description}".strip()
@@ -793,7 +913,23 @@ def register_routes(app):
 # ===========================
 
 def register_error_handlers(app):
-    """Register error handlers"""
+    """
+    Register HTTP error handlers for the Flask application.
+    
+    Handles the following error codes with JSON responses:
+    - 400: Bad Request
+    - 404: Not Found
+    - 413: Request Entity Too Large
+    - 429: Too Many Requests (rate limit exceeded)
+    - 500: Internal Server Error
+    - Catch-all: Unhandled exceptions
+    
+    Security:
+        Internal error details are only exposed in development mode
+    
+    Args:
+        app: Flask application instance
+    """
     @app.errorhandler(400)
     def bad_request(error):
         return jsonify({"error": "Bad Request", "message": str(error)}), 400

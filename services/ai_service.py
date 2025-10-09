@@ -1,5 +1,15 @@
 """
 AI Service - Handles Azure OpenAI operations with optimized multi-step triage
+
+This module provides the core AI functionality for the ITSM triage system, including:
+- Azure OpenAI client initialization with proxy support
+- Multi-step triage processing (type → product → issue → analysis → resolution)
+- Embedding generation for semantic search
+- Core issue extraction from noisy descriptions
+- Hallucination prevention and validation
+- Fallback handling for failed operations
+
+Version: 4.1
 """
 from openai import AzureOpenAI
 from typing import List, Dict, Any, Optional
@@ -9,6 +19,7 @@ from datetime import datetime
 import os
 import time
 import re
+import httpx
 from config import constants
 
 logger = logging.getLogger(__name__)
@@ -26,6 +37,16 @@ class AIService:
         """
         Initialize AI Service with Azure OpenAI client
         Uses httpx proxy configuration instead of manipulating environment variables
+        
+        Args:
+            endpoint: Azure OpenAI endpoint URL
+            api_key: Azure OpenAI API key
+            embedding_deployment: Name of the embedding model deployment
+            chat_deployment: Name of the chat completion model deployment
+            api_version: Azure OpenAI API version (default: "2024-10-21")
+            
+        Raises:
+            Exception: If Azure OpenAI client initialization fails
         """
         try:
             # Configure proxy support via httpx if proxy settings exist
@@ -34,7 +55,6 @@ class AIService:
             https_proxy = os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
             
             if http_proxy or https_proxy:
-                import httpx
                 proxies = {}
                 if http_proxy:
                     proxies["http://"] = http_proxy
@@ -64,7 +84,21 @@ class AIService:
 
 
     def extract_core_issue(self, raw_description: str) -> str:
-        """Extract just the core technical issue from noisy description."""
+        """
+        Extract just the core technical issue from noisy description.
+        
+        Removes email headers, signatures, HTML tags, and other noise while preserving
+        the essential technical details, error messages, and user problem description.
+        
+        Args:
+            raw_description: Raw user input that may contain noise
+            
+        Returns:
+            Cleaned description containing only the core technical issue
+            
+        Note:
+            Uses zero temperature for consistency. On failure, returns original text.
+        """
         
         extraction_prompt = f"""You are extracting the core technical issue from a support request. Your task is ONLY to remove noise whilst preserving the exact user problem.
 
@@ -124,7 +158,18 @@ class AIService:
             return raw_description  # Fail safe - use original
 
     def _sanitise_for_llm(self, text: str) -> str:
-        """Sanitise user input to prevent safety classifier false positives"""
+        """
+        Sanitise user input to prevent safety classifier false positives.
+        
+        Removes problematic line endings and neutralizes potential prompt injection
+        patterns, particularly email signatures that may trigger false positives.
+        
+        Args:
+            text: User input text to sanitise
+            
+        Returns:
+            Sanitised text safe for LLM processing
+        """
         if not text:
             return text
 
@@ -133,13 +178,28 @@ class AIService:
 
         # Remove or neutralise potential prompt injection patterns
         # Email signatures at end of text are common false positive triggers
-        import re
-        cleaned = re.sub(r'\n\n(Regards|Best regards|Thanks|Cheers)\n\n\w+\s*$',
-                         '\n\n[Email signature removed]', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(
+            r'\n\n(Regards|Best regards|Thanks|Cheers)\n\n\w+\s*$',
+            '\n\n[Email signature removed]',
+            cleaned,
+            flags=re.IGNORECASE
+        )
 
         return cleaned
 
     def generate_embedding(self, text: str) -> List[float]:
+        """
+        Generate embeddings for semantic search using Azure OpenAI.
+        
+        Args:
+            text: Input text to generate embeddings for
+            
+        Returns:
+            List of float values representing the text embedding
+            
+        Raises:
+            Exception: If embedding generation fails
+        """
         try:
             logger.info(f"\n🧠 GENERATING EMBEDDING")
             logger.info(f"Text Length: {len(text)} chars")
@@ -177,6 +237,34 @@ class AIService:
         key_insight_text: Optional[str] = None,
         key_insight_source_id: Optional[str] = None
     ) -> Dict[str, Any]:
+        """
+        Execute optimized multi-step triage process using Azure OpenAI.
+        
+        This is the main triage orchestration method that executes 5 steps:
+        1. Type Classification (Incident vs Service Request) + Environment
+        2. Product Selection (from type-specific product list)
+        3. Issue Selection + Priority Calculation + Clarifying Questions
+        4. Root Cause Analysis + Scope Assessment + Initial Response
+        5. Resolution Content Generation + HTML Formatting
+        
+        Args:
+            summary: Brief incident summary
+            description: Detailed incident description
+            call_source: Source of request (Phone, Email, Portal, etc.)
+            retrieved_records: List of similar records from semantic search
+            config_manager: Configuration manager with taxonomy and rules
+            temperature: LLM temperature (default: 0.0 for consistency)
+            found_document_ids: Set of valid document IDs from search results
+            key_insight_text: Optional key technical detail from top match
+            key_insight_source_id: Optional ID of record containing key insight
+            
+        Returns:
+            Complete triage result dictionary with classification, analysis,
+            resolution, and token usage information
+            
+        Raises:
+            Falls back to generate_triage_response on any exception
+        """
         try:
             from config import prompts
 
@@ -190,8 +278,19 @@ class AIService:
                 config_manager.categories.type
             )
             
-            type_response = self.client.chat.completions.create(model=self.chat_deployment, messages=[{"role": "system", "content": "You are an ITSM expert. Return only JSON."}, {
-                                                                "role": "user", "content": type_prompt}], temperature=temperature, top_p=1, n=1, frequency_penalty=0, presence_penalty=0, response_format={"type": "json_object"})
+            type_response = self.client.chat.completions.create(
+                model=self.chat_deployment,
+                messages=[
+                    {"role": "system", "content": "You are an ITSM expert. Return only JSON."},
+                    {"role": "user", "content": type_prompt}
+                ],
+                temperature=temperature,
+                top_p=1,
+                n=1,
+                frequency_penalty=0,
+                presence_penalty=0,
+                response_format={"type": "json_object"}
+            )
             type_result = json.loads(type_response.choices[0].message.content)
             type_selected = type_result.get("type", "Incident")
             environment_selected = type_result.get("environment", "Live")
@@ -208,7 +307,9 @@ class AIService:
                 logger.warning(f"WARNING: No filtered products for {type_selected}, using full list")
                 valid_products = config_manager.categories.product
             
-            product_prompt = prompts.build_product_prompt(summary, description, type_selected, retrieved_records[:5], valid_products)
+            product_prompt = prompts.build_product_prompt(
+                summary, description, type_selected, retrieved_records[:5], valid_products
+            )
             product_response = self.client.chat.completions.create(
                 model=self.chat_deployment, 
                 messages=[
@@ -251,9 +352,10 @@ class AIService:
                 valid_issues = config_manager.categories.issue
 
             issue_prompt = prompts.build_issue_priority_prompt_only(
-                summary, description, type_selected, product_selected, retrieved_records,
-                valid_issues, config_manager.priority_matrix, environment_selected,
-                issue_precedence_override)
+                summary, description, type_selected, product_selected, 
+                retrieved_records, valid_issues, config_manager.priority_matrix, 
+                environment_selected, issue_precedence_override
+            )
 
             issue_response = self.client.chat.completions.create(
                 model=self.chat_deployment,
@@ -283,8 +385,19 @@ class AIService:
                 key_insight_text=key_insight_text,
                 key_insight_source_id=key_insight_source_id
             )
-            analysis_response = self.client.chat.completions.create(model=self.chat_deployment, messages=[{"role": "system", "content": "You are an ITSM expert. Provide detailed analysis. Return only JSON."}, {
-                                                                    "role": "user", "content": analysis_prompt}], temperature=temperature, top_p=1, n=1, frequency_penalty=0, presence_penalty=0, response_format={"type": "json_object"})
+            analysis_response = self.client.chat.completions.create(
+                model=self.chat_deployment,
+                messages=[
+                    {"role": "system", "content": "You are an ITSM expert. Provide detailed analysis. Return only JSON."},
+                    {"role": "user", "content": analysis_prompt}
+                ],
+                temperature=temperature,
+                top_p=1,
+                n=1,
+                frequency_penalty=0,
+                presence_penalty=0,
+                response_format={"type": "json_object"}
+            )
 
             analysis_result = json.loads(analysis_response.choices[0].message.content)
             analysis_result = self._sanitize_text_fields(analysis_result, found_document_ids)
@@ -318,12 +431,16 @@ class AIService:
             }
 
             resolution_content_prompt = prompts.build_resolution_content_prompt(
-                incident_details, retrieved_records[:5])
+                incident_details, retrieved_records[:5]
+            )
 
             resolution_content_response = self.client.chat.completions.create(
                 model=self.chat_deployment,
                 messages=[
-                    {"role": "system", "content": "Generate resolution content. Be concise but comprehensive. Return only JSON."},
+                    {
+                        "role": "system",
+                        "content": "Generate resolution content. Be concise but comprehensive. Return only JSON."
+                    },
                     {"role": "user", "content": resolution_content_prompt}
                 ],
                 temperature=temperature,
@@ -480,6 +597,19 @@ class AIService:
             return self.generate_triage_response(summary, description, call_source, retrieved_records, config_manager, temperature)
 
     def _sanitize_text_fields(self, content_dict: dict, found_document_ids: set) -> dict:
+        """
+        Remove hallucinated document references from AI-generated content.
+        
+        Scans text fields for document ID patterns (PRB, SUN, KB) and removes
+        any references to IDs that were not in the original search results.
+        
+        Args:
+            content_dict: Dictionary containing AI-generated text fields
+            found_document_ids: Set of valid document IDs from search results
+            
+        Returns:
+            Sanitized dictionary with hallucinated references removed
+        """
         if not found_document_ids:
             return content_dict
 
@@ -538,9 +668,22 @@ class AIService:
         return content_dict
 
     def _validate_and_fix_response(self, response_dict, description, referenced_documents):
-        """Post-generation validator to catch common AI reasoning errors"""
-        import re
-
+        """
+        Post-generation validator to catch common AI reasoning errors.
+        
+        Applies guardrails to fix known AI issues such as:
+        - Phantom media provisioning claims
+        - Invalid document references
+        - Issue misclassifications
+        
+        Args:
+            response_dict: AI-generated response dictionary
+            description: Original incident description
+            referenced_documents: List of valid document IDs from search
+            
+        Returns:
+            Validated and corrected response dictionary
+        """
         fixes_applied = []
 
         # Guardrail 1: Issue misclassification for compatibility questions (already handled by precedence rule)
@@ -611,7 +754,22 @@ class AIService:
                                  retrieved_records: List[Dict[str, Any]], config_manager: Any,
                                  temperature: float = 0.2) -> Dict[str, Any]:
         """
-        Fallback triage response when optimised method fails
+        Fallback triage response when optimised method fails.
+        
+        Provides a basic, safe categorization as a Service Request with
+        low priority to ensure the system remains operational even when
+        the main triage method encounters errors.
+        
+        Args:
+            summary: Brief incident summary
+            description: Detailed incident description
+            call_source: Source of the request
+            retrieved_records: List of similar records (not used in fallback)
+            config_manager: Configuration manager (not used in fallback)
+            temperature: LLM temperature (not used in fallback)
+            
+        Returns:
+            Basic triage response dictionary with minimal token usage
         """
         logger.info("🔄 Using fallback triage response")
 
@@ -646,15 +804,3 @@ class AIService:
         }
 
         return basic_response
-
-    def validate_resolution_against_facts(self, ai_response: dict, retrieved_records: list, key_insight: str):
-        """
-        Validate AI response doesn't contradict search results
-        Note: Generic validation - specific contradiction checks handled by hallucination prevention in _sanitize_text_fields
-        """
-        # General validation could be added here for common contradiction patterns
-        # For now, rely on the comprehensive hallucination prevention elsewhere
-        return True
-
-    def _validate_and_apply_defaults(self, result: Dict[str, Any], categories: Any, call_source: str) -> Dict[str, Any]:
-        pass

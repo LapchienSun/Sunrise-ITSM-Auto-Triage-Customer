@@ -1,5 +1,15 @@
 """
 SearchService for Vector Index v2 - Full Incident Search with Temporal Filtering
+
+This module provides comprehensive Azure Cognitive Search operations for the ITSM triage system:
+- Vector search with embeddings for semantic similarity
+- Hybrid search combining vector and text search
+- Temporal filtering for recent incidents
+- Quality filtering (bronze, silver, gold)
+- Statistical analysis and trending
+- Support for multiple record types (INCIDENT, PROBLEM, KNOWLEDGE)
+
+Version: 4.1 - Vector Index v2 Schema
 """
 from azure.search.documents import SearchClient
 from azure.search.documents.models import VectorizedQuery
@@ -7,17 +17,32 @@ from azure.core.credentials import AzureKeyCredential
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone, timedelta
-import math
 from config import constants
 
 logger = logging.getLogger(__name__)
 
 
 class SearchService:
-    """Service for handling Azure Cognitive Search operations with Vector Index v2"""
+    """
+    Service for handling Azure Cognitive Search operations with Vector Index v2.
+    
+    Provides unified interface for searching incident records using:
+    - Pure vector search for semantic similarity
+    - Hybrid search (vector + text) for comprehensive matching
+    - Text-only search for keyword matching
+    - Temporal and quality filters
+    - Statistical aggregations
+    """
     
     def __init__(self, endpoint: str, api_key: str, index_name: str):
-        """Initialize search service with Azure credentials"""
+        """
+        Initialize search service with Azure credentials.
+        
+        Args:
+            endpoint: Azure Search service endpoint URL
+            api_key: Azure Search API key for authentication
+            index_name: Name of the search index to query
+        """
         self.endpoint = endpoint
         self.index_name = index_name
         
@@ -32,7 +57,15 @@ class SearchService:
         logger.info("Using Vector Index v2 schema with full incident documents")
     
     def test_connection(self):
-        """Test connection to Azure Search"""
+        """
+        Test connection to Azure Search and retrieve document count.
+        
+        Returns:
+            bool: True if connection successful
+            
+        Raises:
+            Exception: If connection fails
+        """
         try:
             result = self.client.get_document_count()
             logger.info(f"Connected to vector index. Document count: {result}")
@@ -48,7 +81,27 @@ class SearchService:
                                          data_quality: Optional[str] = None,
                                          product_filter: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Perform vector search with temporal and quality filtering
+        Perform vector search with temporal and quality filtering.
+        
+        This is the core search method that supports multiple filter types:
+        - Temporal: Filter by resolution date (recent incidents prioritized)
+        - Confidence: Filter by document confidence score
+        - Quality: Filter by data quality tier (bronze/silver/gold)
+        - Product: Filter by product category
+        
+        Args:
+            query_embedding: Vector embedding of the query text
+            top_k: Maximum number of results to return (default: 10)
+            days_back: Optional days to look back for temporal filtering
+            min_confidence: Optional minimum confidence score threshold
+            data_quality: Optional quality tier filter (bronze/silver/gold)
+            product_filter: Optional product category filter
+            
+        Returns:
+            List of formatted search results with scores, metadata, and age information
+            
+        Raises:
+            Exception: If search operation fails
         """
         try:
             logger.info(f"🔍 Vector search with temporal filtering")
@@ -89,10 +142,10 @@ class SearchService:
                 "vector_queries": [vector_query],
                 "top": top_k,
                 "select": [
-                    "id", "incident_id", "clean_summary", "clean_description", 
+                    "id", "incident_id", "clean_summary", "clean_description",
                     "itil_resolution", "ticket_type", "product", "issue_category",
                     "priority", "confidence_score", "data_quality", "resolution_date",
-                    "source_record" 
+                    "source_record"
                 ]
             }
             
@@ -118,28 +171,34 @@ class SearchService:
                         result["resolution_date_formatted"] = "Unknown"
                 
                 formatted_results.append({
-                "id": result.get("id"),
-                "@search.score": result.get("@search.score"),
-                "incident_id": result.get("incident_id"),
-                "clean_summary": result.get("clean_summary"),
-                "clean_description": result.get("clean_description"),
-                "itil_resolution": result.get("itil_resolution"),
-                "ticket_type": result.get("ticket_type"),
-                "product": result.get("product"),
-                "issue_category": result.get("issue_category"),
-                "priority": result.get("priority"),
-                "confidence_score": result.get("confidence_score"),
-                "data_quality": result.get("data_quality"),
-                "resolution_date": result.get("resolution_date"),
-                "resolution_date_formatted": result.get("resolution_date_formatted"),
-                "days_ago": result.get("days_ago"),
-                "source_record": result.get("source_record")
-            })
+                    "id": result.get("id"),
+                    "@search.score": result.get("@search.score"),
+                    "incident_id": result.get("incident_id"),
+                    "clean_summary": result.get("clean_summary"),
+                    "clean_description": result.get("clean_description"),
+                    "itil_resolution": result.get("itil_resolution"),
+                    "ticket_type": result.get("ticket_type"),
+                    "product": result.get("product"),
+                    "issue_category": result.get("issue_category"),
+                    "priority": result.get("priority"),
+                    "confidence_score": result.get("confidence_score"),
+                    "data_quality": result.get("data_quality"),
+                    "resolution_date": result.get("resolution_date"),
+                    "resolution_date_formatted": result.get("resolution_date_formatted"),
+                    "days_ago": result.get("days_ago"),
+                    "source_record": result.get("source_record")
+                })
             
             logger.info(f"✅ Vector search returned {len(formatted_results)} results")
             if formatted_results:
                 top_result = formatted_results[0]
-                logger.info(f"  Top result: {top_result['incident_id']} (Azure score: {top_result['@search.score']:.3f}, Doc confidence: {top_result.get('confidence_score', 'N/A')}, Quality: {top_result['data_quality']}, Age: {top_result.get('days_ago', 'Unknown')} days)")
+                logger.info(
+                    f"  Top result: {top_result['incident_id']} "
+                    f"(Azure score: {top_result['@search.score']:.3f}, "
+                    f"Doc confidence: {top_result.get('confidence_score', 'N/A')}, "
+                    f"Quality: {top_result['data_quality']}, "
+                    f"Age: {top_result.get('days_ago', 'Unknown')} days)"
+                )
             
             return formatted_results
             
@@ -152,7 +211,26 @@ class SearchService:
                      filter_expression: str = None, 
                      scoring_profile: str = None) -> List[Dict[str, Any]]:
         """
-        Enhanced hybrid search combining vector + text with temporal intelligence
+        Enhanced hybrid search combining vector + text with temporal intelligence.
+        
+        Performs a three-step search process:
+        1. Vector search for semantic similarity (70% weight)
+        2. Text search for keyword matching (30% weight)
+        3. Combines results with quality boosting (gold: 1.3x, silver: 1.1x)
+        
+        Args:
+            query_text: Text query for keyword matching
+            query_embedding: Vector embedding for semantic search
+            top_k: Maximum number of results to return (default: 10)
+            use_semantic: Whether to use semantic search capabilities (default: True)
+            filter_expression: Optional OData filter expression
+            scoring_profile: Optional Azure Search scoring profile name
+            
+        Returns:
+            List of ranked search results with combined scores and metadata
+            
+        Note:
+            Falls back to vector-only search if hybrid search fails
         """
         try:
             logger.info("🚀 Starting Vector v2 hybrid search")
@@ -278,7 +356,21 @@ class SearchService:
                         top_k: int = 10, filter_expression: str = None,
                         scoring_profile: str = None, use_semantic: bool = True) -> List[Dict[str, Any]]:
         """
-        Search for documents - now searches all incidents as KB functionality is integrated
+        Search for high-quality document-like incidents.
+        
+        Searches for gold-quality, high-confidence incidents with good resolutions,
+        effectively treating resolved incidents as knowledge base articles.
+        
+        Args:
+            query_text: Text query (not used in this implementation)
+            query_embedding: Vector embedding for semantic search
+            top_k: Maximum number of results to return (default: 10)
+            filter_expression: Optional filter (not used, quality filters applied)
+            scoring_profile: Optional scoring profile (not used)
+            use_semantic: Whether to use semantic search (not used)
+            
+        Returns:
+            List of gold-quality incidents with high confidence scores
         """
         logger.info("📚 Searching documents (all incident resolutions)")
         
@@ -295,7 +387,23 @@ class SearchService:
                    scoring_profile: str = None,
                    order_by: str = None) -> List[Dict[str, Any]]:
         """
-        Perform traditional text search without vector component
+        Perform traditional text search without vector component.
+        
+        Uses full-text search capabilities for keyword-based matching.
+        Supports wildcard queries ("*") for listing all documents.
+        
+        Args:
+            query_text: Search query text (use "*" for all documents)
+            top_k: Maximum number of results to return (default: 10)
+            filter_expression: Optional OData filter expression
+            scoring_profile: Optional Azure Search scoring profile name
+            order_by: Optional field(s) to order results by
+            
+        Returns:
+            List of formatted search results matching the text query
+            
+        Raises:
+            Exception: If search operation fails
         """
         try:
             search_params = {
@@ -333,7 +441,17 @@ class SearchService:
 
     def _convert_to_v2_format(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Convert search result to consistent format - updated for Vector v2 schema
+        Convert search result to consistent Vector v2 format.
+        
+        Normalizes search results from different query types into a standard format,
+        handles resolution date formatting, and calculates document age.
+        
+        Args:
+            result: Raw search result from Azure Search
+            
+        Returns:
+            Formatted dictionary with consistent field structure and additional
+            computed fields (days_ago, resolution_date_formatted)
         """
         # Handle resolution date formatting
         resolution_date = result.get("resolution_date")
@@ -377,7 +495,17 @@ class SearchService:
                               top_k: int = 10, use_semantic: bool = True,
                               filter_expression: str = None) -> List[Dict[str, Any]]:
         """
-        Alias for hybrid_search to maintain compatibility
+        Alias for hybrid_search to maintain backwards compatibility.
+        
+        Args:
+            query_text: Text query for keyword matching
+            query_embedding: Vector embedding for semantic search
+            top_k: Maximum number of results to return (default: 10)
+            use_semantic: Whether to use semantic search (default: True)
+            filter_expression: Optional OData filter expression
+            
+        Returns:
+            List of ranked search results (delegates to hybrid_search)
         """
         return self.hybrid_search(
             query_text=query_text,
@@ -390,7 +518,18 @@ class SearchService:
     def vector_search(self, query_embedding: List[float], top_k: int = 10,
                      filter_expression: str = None) -> List[Dict[str, Any]]:
         """
-        Pure vector search - delegates to temporal filter method
+        Pure vector search without temporal filtering.
+        
+        Performs semantic similarity search using only the vector embedding.
+        No temporal, quality, or product filters applied.
+        
+        Args:
+            query_embedding: Vector embedding of the query text
+            top_k: Maximum number of results to return (default: 10)
+            filter_expression: Optional filter (not used, delegates to unfiltered search)
+            
+        Returns:
+            List of semantically similar results ranked by vector similarity
         """
         return self.vector_search_with_temporal_filter(
             query_embedding=query_embedding,
@@ -401,7 +540,18 @@ class SearchService:
     def format_search_results(self, search_results: List[Dict[str, Any]], 
                              query_text: str, max_results: int = 5) -> List[Dict[str, Any]]:
         """
-        Format search results - simplified for v2 (no special PROBLEM record handling)
+        Format search results for display with additional metadata.
+        
+        Adds display flags and context to search results for UI rendering.
+        Simplified for Vector v2 schema (all records are incidents).
+        
+        Args:
+            search_results: Raw search results from any search method
+            query_text: Original query text (not currently used)
+            max_results: Maximum number of results to format (default: 5)
+            
+        Returns:
+            List of formatted results with has_resolution, display_text flags
         """
         formatted_results = []
         
@@ -427,7 +577,17 @@ class SearchService:
 
     def get_recent_incidents(self, days_back: int = None, top_k: int = 10) -> List[Dict[str, Any]]:
         """
-        Get recent high-quality incidents for trending analysis
+        Get recent high-quality incidents for trending analysis.
+        
+        Retrieves gold-quality incidents from a recent time window,
+        ordered by resolution date (newest first).
+        
+        Args:
+            days_back: Number of days to look back (default: from constants)
+            top_k: Maximum number of results to return (default: 10)
+            
+        Returns:
+            List of recent gold-quality incidents ordered by date descending
         """
         if days_back is None:
             days_back = constants.RECENT_INCIDENTS_DAYS
@@ -435,7 +595,10 @@ class SearchService:
         logger.info(f"📈 Getting recent incidents from last {days_back} days")
         
         cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days_back))
-        filter_expr = f"resolution_date ge {cutoff_date.strftime('%Y-%m-%dT%H:%M:%SZ')} and data_quality eq '{constants.QUALITY_GOLD}'"
+        filter_expr = (
+            f"resolution_date ge {cutoff_date.strftime('%Y-%m-%dT%H:%M:%SZ')} "
+            f"and data_quality eq '{constants.QUALITY_GOLD}'"
+        )
         
         return self.text_search(
             query_text="*",
@@ -446,7 +609,17 @@ class SearchService:
 
     def get_incident_statistics(self) -> Dict[str, Any]:
         """
-        Get basic statistics about the vector index
+        Get comprehensive statistics about the vector index.
+        
+        Retrieves:
+        - Total document count
+        - Recent incidents count (last 30 days default)
+        - Quality distribution (bronze/silver/gold counts)
+        - Product distribution (top 10 products)
+        - Index metadata
+        
+        Returns:
+            Dictionary with statistical information and facet distributions
         """
         try:
             # Total count
@@ -454,8 +627,11 @@ class SearchService:
             total_count = total_results.get_count()
             
             # Recent incidents
-            recent_filter = f"resolution_date ge {(datetime.now(timezone.utc) - timedelta(days=constants.RECENT_INCIDENTS_DAYS)).strftime('%Y-%m-%dT%H:%M:%SZ')}"
-            recent_results = self.client.search("*", filter=recent_filter, include_total_count=True, top=0)
+            recent_cutoff = (datetime.now(timezone.utc) - timedelta(days=constants.RECENT_INCIDENTS_DAYS))
+            recent_filter = f"resolution_date ge {recent_cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')}"
+            recent_results = self.client.search(
+                "*", filter=recent_filter, include_total_count=True, top=0
+            )
             recent_count = recent_results.get_count()
             
             # Quality distribution
