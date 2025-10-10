@@ -104,8 +104,6 @@ class SearchService:
             Exception: If search operation fails
         """
         try:
-            logger.info(f"🔍 Vector search with temporal filtering")
-            
             # Build filter expression
             filter_parts = []
             
@@ -113,20 +111,22 @@ class SearchService:
             if days_back:
                 cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days_back))
                 filter_parts.append(f"resolution_date ge {cutoff_date.strftime('%Y-%m-%dT%H:%M:%SZ')}")
-                logger.info(f"  📅 Filtering to last {days_back} days (since {cutoff_date.strftime('%Y-%m-%d')})")
+                logger.info(f"🔍 Vector search (last {days_back} days)")
+            else:
+                logger.info(f"🔍 Vector search (all dates)")
             
-            # Quality filter
+            # NOTE: min_confidence parameter intentionally not used for filtering
+            # confidence_score in indexed data reflects synthesis quality, not match relevance
+            # Vector similarity (@search.score) is the only relevant metric for matching
             if min_confidence:
-                filter_parts.append(f"confidence_score ge {min_confidence}")
-                logger.info(f"  ⭐ Filtering to confidence >= {min_confidence}")
+                logger.warning(f"  ⚠️ min_confidence parameter ignored - synthesis confidence not relevant for matching")
             
             if data_quality:
                 filter_parts.append(f"data_quality eq '{data_quality}'")
-                logger.info(f"  🥇 Filtering to '{data_quality}' quality incidents")
             
             if product_filter:
                 filter_parts.append(f"product eq '{product_filter}'")
-                logger.info(f"  🏷️ Filtering to product: {product_filter}")
+                logger.info(f"  Filtering to product: {product_filter}")
             
             filter_expression = " and ".join(filter_parts) if filter_parts else None
             
@@ -151,7 +151,6 @@ class SearchService:
             
             if filter_expression:
                 search_params["filter"] = filter_expression
-                logger.info(f"  🔧 Applied filter: {filter_expression}")
             
             results = self.client.search(**search_params)
             
@@ -194,9 +193,7 @@ class SearchService:
                 top_result = formatted_results[0]
                 logger.info(
                     f"  Top result: {top_result['incident_id']} "
-                    f"(Azure score: {top_result['@search.score']:.3f}, "
-                    f"Doc confidence: {top_result.get('confidence_score', 'N/A')}, "
-                    f"Quality: {top_result['data_quality']}, "
+                    f"(Search score: {top_result['@search.score']:.3f}, "
                     f"Age: {top_result.get('days_ago', 'Unknown')} days)"
                 )
             
@@ -240,7 +237,7 @@ class SearchService:
                 query_embedding=query_embedding,
                 top_k=top_k * 2,  # Get more candidates
                 days_back=None,  # No temporal filtering
-                min_confidence=constants.MIN_SEMANTIC_CONFIDENCE  # Only high-confidence incidents
+                min_confidence=None  # Don't filter on synthesis confidence
             )
             
             # Step 2: Text search for keyword matching
@@ -279,19 +276,22 @@ class SearchService:
                 doc_id = result.get("id")
                 vector_score = result.get("@search.score", 0)
                 
-                # Quality boost
-                quality_boost = 1.0
-                if result.get("data_quality") == "gold":
-                    quality_boost = 1.3
-                elif result.get("data_quality") == "silver":
-                    quality_boost = 1.1
+                # REMOVED: Quality boost multiplier - let raw scores stand as they are
+                # Previously applied 1.3x for gold, 1.1x for silver
+                # quality_boost = 1.0
+                # if result.get("data_quality") == "gold":
+                #     quality_boost = 1.3
+                # elif result.get("data_quality") == "silver":
+                #     quality_boost = 1.1
+                # combined_score = vector_score * quality_boost
                 
-                combined_score = vector_score * quality_boost
+                # Use raw vector score without boosting
+                combined_score = vector_score
                 
                 result_map[doc_id] = {
                     **result,
                     "vector_score": vector_score,
-                    "quality_boost": quality_boost,
+                    "quality_boost": 1.0,  # No longer applying boost, kept for backward compatibility
                     "@search.score": combined_score,
                     "text_score": 0,
                     "search_type": "vector"
@@ -305,9 +305,10 @@ class SearchService:
                 if doc_id in result_map:
                     # Enhance existing vector result
                     existing = result_map[doc_id]
-                    # Combine scores with vector preference
+                    # Combine scores with vector preference (no quality boost applied)
                     combined_score = (existing["vector_score"] * 0.7) + (text_score * 0.3)
-                    combined_score *= existing["quality_boost"]
+                    # REMOVED: Quality boost multiplier
+                    # combined_score *= existing["quality_boost"]
                     
                     result_map[doc_id]["@search.score"] = combined_score
                     result_map[doc_id]["text_score"] = text_score
@@ -342,7 +343,6 @@ class SearchService:
                 logger.info(f"{i}. {result['incident_id']} - "
                           f"Score: {result['@search.score']:.3f} "
                           f"(Type: {result['search_type']}, "
-                          f"Quality: {result['data_quality']}, "
                           f"Age: {result.get('days_ago', 'Unknown')} days)")
             
             return sorted_results
@@ -356,30 +356,30 @@ class SearchService:
                         top_k: int = 10, filter_expression: str = None,
                         scoring_profile: str = None, use_semantic: bool = True) -> List[Dict[str, Any]]:
         """
-        Search for high-quality document-like incidents.
+        Search for document-like incidents.
         
-        Searches for gold-quality, high-confidence incidents with good resolutions,
-        effectively treating resolved incidents as knowledge base articles.
+        Searches for incidents with good resolutions, effectively treating
+        resolved incidents as knowledge base articles.
         
         Args:
             query_text: Text query (not used in this implementation)
             query_embedding: Vector embedding for semantic search
             top_k: Maximum number of results to return (default: 10)
-            filter_expression: Optional filter (not used, quality filters applied)
+            filter_expression: Optional filter (not used)
             scoring_profile: Optional scoring profile (not used)
             use_semantic: Whether to use semantic search (not used)
             
         Returns:
-            List of gold-quality incidents with high confidence scores
+            List of incidents based on vector similarity
         """
         logger.info("📚 Searching documents (all incident resolutions)")
         
-        # Search for high-quality incidents with good resolutions
+        # Search for incidents with good resolutions
         return self.vector_search_with_temporal_filter(
             query_embedding=query_embedding,
             top_k=top_k,
-            min_confidence=constants.MIN_REFERENCE_CONFIDENCE,  # High-confidence incidents only
-            data_quality=constants.QUALITY_GOLD  # Gold quality incidents only
+            min_confidence=None,  # Don't filter on synthesis confidence
+            data_quality=None  # Don't filter on data quality - focus on vector similarity
         )
 
     def text_search(self, query_text: str, top_k: int = 10,
@@ -577,9 +577,9 @@ class SearchService:
 
     def get_recent_incidents(self, days_back: int = None, top_k: int = 10) -> List[Dict[str, Any]]:
         """
-        Get recent high-quality incidents for trending analysis.
+        Get recent incidents for trending analysis.
         
-        Retrieves gold-quality incidents from a recent time window,
+        Retrieves incidents from a recent time window,
         ordered by resolution date (newest first).
         
         Args:
@@ -587,7 +587,7 @@ class SearchService:
             top_k: Maximum number of results to return (default: 10)
             
         Returns:
-            List of recent gold-quality incidents ordered by date descending
+            List of recent incidents ordered by date descending
         """
         if days_back is None:
             days_back = constants.RECENT_INCIDENTS_DAYS
@@ -595,10 +595,7 @@ class SearchService:
         logger.info(f"📈 Getting recent incidents from last {days_back} days")
         
         cutoff_date = (datetime.now(timezone.utc) - timedelta(days=days_back))
-        filter_expr = (
-            f"resolution_date ge {cutoff_date.strftime('%Y-%m-%dT%H:%M:%SZ')} "
-            f"and data_quality eq '{constants.QUALITY_GOLD}'"
-        )
+        filter_expr = f"resolution_date ge {cutoff_date.strftime('%Y-%m-%dT%H:%M:%SZ')}"
         
         return self.text_search(
             query_text="*",
@@ -614,7 +611,6 @@ class SearchService:
         Retrieves:
         - Total document count
         - Recent incidents count (last 30 days default)
-        - Quality distribution (bronze/silver/gold counts)
         - Product distribution (top 10 products)
         - Index metadata
         
@@ -634,22 +630,18 @@ class SearchService:
             )
             recent_count = recent_results.get_count()
             
-            # Quality distribution
-            quality_results = self.client.search(
+            # Get facets for product distribution
+            facet_results = self.client.search(
                 "*", 
-                facets=["data_quality", "product", "priority"],
+                facets=["product", "priority"],
                 top=0
             )
             
-            facets = quality_results.get_facets()
+            facets = facet_results.get_facets()
             
             return {
                 "total_incidents": total_count,
                 f"recent_incidents_{constants.RECENT_INCIDENTS_DAYS}_days": recent_count,
-                "quality_distribution": {
-                    facet['value']: facet['count'] 
-                    for facet in facets.get("data_quality", [])
-                },
                 "product_distribution": {
                     facet['value']: facet['count'] 
                     for facet in facets.get("product", [])[:10]  # Top 10

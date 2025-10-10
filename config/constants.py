@@ -41,13 +41,14 @@ MAX_DAYS_BACK = 365
 # ===========================
 
 # High confidence match threshold - used for resolution fidelity
+# This is based on VECTOR SIMILARITY (@search.score), not synthesis confidence
 HIGH_CONFIDENCE_THRESHOLD = 0.70
 
-# Minimum semantic search confidence
-MIN_SEMANTIC_CONFIDENCE = 0.70
-
-# Minimum reference document confidence
-MIN_REFERENCE_CONFIDENCE = 0.80
+# DEPRECATED: These were incorrectly filtering on confidence_score (synthesis quality)
+# confidence_score reflects how well data was synthesized during indexing, NOT match relevance
+# Vector similarity (@search.score) is the only relevant metric for matching
+# MIN_SEMANTIC_CONFIDENCE = 0.70  # DEPRECATED - do not use
+# MIN_REFERENCE_CONFIDENCE = 0.80  # DEPRECATED - do not use
 
 # ===========================
 # SEARCH RESULT LIMITS

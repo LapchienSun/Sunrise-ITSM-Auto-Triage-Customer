@@ -5,15 +5,16 @@
 
 ## 📊 Executive Summary
 
-The **Sunrise Software ITSM Triage API** has evolved from a basic MVP to a sophisticated, production-grade incident management system over five months of intensive development. Now at **version 4.0**, it represents a comprehensive solution that automatically classifies, prioritises, and provides resolution guidance for ITSM incidents and service requests using advanced AI and authoritative knowledge management.
+The **Sunrise Software ITSM Triage API** has evolved from a basic MVP to a sophisticated, production-grade incident management system over five months of intensive development. Now at **version 4.1**, it represents a comprehensive solution that automatically classifies, prioritises, and provides resolution guidance for ITSM incidents and service requests using advanced AI and authoritative knowledge management.
 
 ### 🎯 Current System Capabilities
 - 🤖 **AI-Powered Triage**: GPT-4-driven automatic incident classification with optimised prompts
 - 📚 **Three-Tier Knowledge System**: KNOWLEDGE articles, PROBLEM records, and INCIDENT history
-- 🔍 **Advanced Vector Search**: Pure semantic matching with quality-focused filtering
+- 🔍 **Pure Vector Search**: Semantic matching based solely on similarity (no artificial scoring)
+- 🎯 **Intelligent Confidence Assessment**: Category validation and transparent scoring
 - ⚡ **High-Performance Processing**: 10 second response times (3-4x faster than v3.9.3)
 - 🛡️ **Production Security**: API authentication, rate limiting, and comprehensive input validation
-- 🎯 **ITIL v4 Compliance**: Industry best practices with refined priority logic
+- 📊 **Enhanced Transparency**: Clear confidence bands and match reasoning for analysts
 - 🇬🇧 **UK English Standard**: Consistent language enforcement throughout
 
 ---
@@ -38,10 +39,85 @@ The **Sunrise Software ITSM Triage API** has evolved from a basic MVP to a sophi
 | **v3.9** | August 2025 | 📚 **Knowledge Authority** | KNOWLEDGE article integration | Authoritative guidance |
 | **v3.9.3** | October 2025 | 🎨 **Prompt Optimisation** | Streamlined AI processing | 40% faster, cleaner output |
 | **v4.0** | October 2025 | 🛡️ **Production Hardened** | Security, rate limiting, validation | Enterprise deployment ready |
+| **v4.1** | October 2025 | 🎯 **Confidence & Transparency** | Category validation, pure vector scoring | Analyst trust & accuracy |
 
 ---
 
 ## 🏗️ Development Phases Deep Dive
+
+### 🎯 Phase 7: Confidence & Transparency Revolution (v4.1)
+**Duration**: October 2025  
+**Focus**: Enhanced confidence scoring, category validation, and analyst transparency
+
+#### Major Confidence & Transparency Enhancements:
+- 🎯 **Category Validation**: AI categorization cross-validated with search results
+- 📊 **Transparent Confidence Scoring**: Raw similarity scores without artificial multipliers
+- 🏷️ **Confidence Banding**: Clear Low/Medium/High bands with exact percentages
+- 💬 **Enhanced Match Reasoning**: Explains why specific incidents were surfaced
+- ⚠️ **Mismatch Detection**: Identifies when semantic similarity is misleading
+- 🧹 **Debug Log Cleanup**: Removed confusing synthesis quality references
+
+#### Pure Vector Similarity Philosophy:
+```python
+# Before v4.1: Multiple conflicting signals
+{
+  "scoring": "Vector similarity × quality_boost multiplier",
+  "filtering": "Gold quality only for references",
+  "confidence_source": "Synthesis quality from indexing process",
+  "transparency": "Limited - no percentage scores"
+}
+
+# After v4.1: Single source of truth
+{
+  "scoring": "Pure vector similarity (@search.score)",
+  "filtering": "None - let similarity determine relevance",
+  "confidence_source": "Only vector match quality",
+  "transparency": "High - percentage + reasoning + category validation"
+}
+```
+
+#### Category Validation System:
+When AI categorizes an issue as "Network/Firewall" but top match is "Physical Security/Access Control":
+- ⚠️ **Mismatch detected** - categories don't align
+- 📉 **Confidence downgraded** - High → Medium automatically
+- 💡 **Warning shown to analyst** - "treat with skepticism"
+- ✅ **Prevents misleading matches** - e.g., "website blocked" vs "gate access"
+
+#### Confidence Transparency Improvements:
+**Before v4.1**:
+```json
+{
+  "suggested_resolution": "<p>Contact network team...</p>"
+  // No confidence information visible to analyst
+}
+```
+
+**After v4.1**:
+```json
+{
+  "confidence": "High",
+  "confidence_display": "High (87%)",
+  "confidence_score_raw": 0.871,
+  "category_match": true,
+  "match_quality": "excellent",
+  "suggested_resolution": 
+    "<p><b>Confidence:</b> High (87%)</p>
+     <p><b>Match Reasoning:</b> Based on Incident INC001027 
+     (categories align: Network/Firewall), which had a very 
+     similar issue: 'Website is blocked'...</p>
+     <p>Contact network team...</p>"
+}
+```
+
+#### Key Achievements:
+- ✅ **Removed artificial confidence multipliers** - raw scores preserved
+- ✅ **Eliminated synthesis quality influence** - indexing quality doesn't affect triage
+- ✅ **Added category cross-validation** - catches misleading semantic matches
+- ✅ **Enhanced analyst guidance** - clear confidence bands and reasoning
+- ✅ **Cleaned debug logs** - removed confusing "gold quality" references
+- ✅ **Improved accuracy** - identifies when high similarity is superficial
+
+---
 
 ### 🛡️ Phase 6: Production Hardening (v4.0)
 **Duration**: October 2025  
@@ -207,7 +283,7 @@ INCIDENT records offer historical resolution experience
 
 ---
 
-## 🎛️ Current System Architecture (v3.9.3)
+## 🎛️ Current System Architecture (v4.1)
 
 ### 🛠️ Technology Stack
 - **Backend**: Flask (Python 3.12+)
@@ -258,11 +334,12 @@ Structured Response with Implementation Steps
 - **High-Confidence Detection**: Automatic identification of >0.70 similarity matches
 
 ### 🔍 Advanced Search Capabilities
-- **Pure Vector Search**: Enhanced semantic matching with quality filtering
-- **Quality Filtering**: Bronze/Silver/Gold data quality ranking
+- **Pure Vector Search**: Semantic matching based solely on similarity (@search.score)
+- **No Artificial Scoring**: Raw similarity scores preserved without multipliers
+- **Category Validation**: Cross-checks AI categorization with matched documents
 - **Optimised Retrieval**: Efficient candidate selection (no wasteful over-fetching)
 - **Multi-Source Consolidation**: Seamless integration of diverse record types
-- **Confidence Thresholds**: 0.70+ for semantic search, 0.80+ for reference materials
+- **Transparent Confidence**: Clear percentage scores and match reasoning for analysts
 
 ### ⚡ Performance Features
 - **Optimised Architecture**: Streamlined 5-step processing
@@ -273,7 +350,7 @@ Structured Response with Implementation Steps
 
 ---
 
-## 📊 Current Performance Metrics (v4.0)
+## 📊 Current Performance Metrics (v4.1)
 
 ### 🚀 Response Time Breakdown
 | Processing Step | v3.9.3 | v4.0 | Tokens | Purpose |
@@ -291,9 +368,11 @@ Structured Response with Implementation Steps
 ### 📈 Quality & Security Metrics
 - **Categorisation Accuracy**: 99.8%
 - **High-Confidence Detection**: 70%+ similarity threshold
+- **Category Validation**: Automatic mismatch detection and confidence adjustment
 - **Search Efficiency**: 10 results retrieved for 5 returned (50% efficiency)
 - **ITIL Compliance**: v4 standard adherence
 - **Knowledge Utilisation**: Score-based merit system
+- **Confidence Transparency**: Percentage scores + detailed reasoning for analysts
 - **Security Hardening**: API auth, rate limiting, input validation
 - **Request Validation**: 100% of inputs validated before processing
 - **Error Sanitization**: Production mode hides internal details
@@ -386,10 +465,13 @@ Structured Response with Implementation Steps
 - **Scope Impact Prevention**: Prevents unrealistic impact assessments
 - **Evidence-Based Responses**: All recommendations backed by documented evidence
 
-### ✅ Data Quality Controls
-- **Three-Tier Quality Ranking**: Bronze/Silver/Gold classification
-- **Confidence Scoring**: Transparent similarity measurements (0.00-1.00)
-- **High-Confidence Detection**: Automatic exact match identification (>0.70)
+### ✅ Data Quality & Confidence Controls
+- **Pure Similarity Scoring**: Raw @search.score values without artificial multipliers
+- **Confidence Banding**: Low (≤50%), Medium (51-69%), High (≥70%)
+- **Category Validation**: Cross-checks AI categorization with matched documents
+- **Mismatch Detection**: Identifies when semantic similarity is superficial
+- **Transparent Display**: Both band ("High") and percentage ("87%") shown to analysts
+- **Match Reasoning**: Explains which document was matched and why
 - **Content Validation**: Multi-stage verification processes
 
 ### 🧭 ITIL v4 Compliance Framework
@@ -477,12 +559,13 @@ reference_results = search(top_k=5)
 
 ## 📮 Future Roadmap
 
-### 🚀 v4.1 - Advanced Analytics (Planned)
+### 🚀 v4.2 - Advanced Analytics (Planned)
 - Enhanced reporting and analytics dashboard
 - Knowledge article utilisation metrics
 - Resolution pattern analysis
-- Advanced confidence scoring refinements
+- Category validation refinements and learning
 - Rate limiting analytics and monitoring
+- Confidence scoring historical analysis
 
 ### ⚡ v5.0 - Next Generation (Vision)
 - Machine learning for incident clustering
@@ -535,8 +618,9 @@ reference_results = search(top_k=5)
 
 ### 📊 Data Architecture
 - **Record Types**: KNOWLEDGE, PROBLEM, INCIDENT (unified in single index)
-- **Quality Levels**: Bronze, Silver, Gold
-- **Confidence Thresholds**: 0.70+ for semantic, 0.80+ for reference materials
+- **Scoring Method**: Pure vector similarity (@search.score) only
+- **Confidence Display**: Banded (Low/Medium/High) + exact percentage
+- **Category Validation**: AI categorization cross-checked with search results
 - **Token Budget**: ~9,700 total across 5-step processing pipeline
 
 ### 🌐 Deployment Architecture
@@ -568,11 +652,20 @@ The Sunrise Software ITSM Triage API has evolved from a simple MVP to a producti
 - 📚 **Authoritative Knowledge Management** with merit-based three-tier system
 - ⚡ **High-Performance Architecture** with 3-4x speed improvement
 - 🛡️ **Enterprise-Grade Security** with authentication, rate limiting, and validation
-- 🎯 **ITIL v4 Compliance** with refined business logic
+- 🎯 **Intelligent Confidence Assessment** with category validation and transparency
+- 📊 **Enhanced Analyst Guidance** with clear reasoning and confidence bands
 - 🎨 **Clean Engineering** with modular design and clear prompts
 - 🔒 **Production Hardened** with comprehensive security and resource management
 
-### Major Improvements (v4.0):
+### Major Improvements (v4.1):
+- **Enhanced confidence transparency** with percentage scores and clear banding
+- **Category validation system** catching misleading semantic matches
+- **Pure vector similarity scoring** without artificial multipliers or quality bias
+- **Improved match reasoning** explaining why incidents were surfaced
+- **Automatic mismatch detection** with confidence downgrading
+- **Cleaned debug logs** removing confusing synthesis quality references
+
+### Previous Improvements (v4.0):
 - **3-4x performance breakthrough** (30-40s → 10s response times)
 - **Production security hardening** with API authentication and rate limiting
 - **Comprehensive input validation** preventing abuse and cost overruns
@@ -580,22 +673,33 @@ The Sunrise Software ITSM Triage API has evolved from a simple MVP to a producti
 - **Resource management** with automatic ThreadPoolExecutor cleanup
 - **Enterprise-ready deployment** with complete security documentation
 
-The system is now **production-ready and hardened**, providing analysts with intelligent, authoritative guidance whilst maintaining the security, performance, and reliability required for enterprise-scale deployments.
+The system is now **production-ready and hardened**, providing analysts with intelligent, authoritative guidance backed by transparent confidence scoring and category validation. It maintains the security, performance, and reliability required for enterprise-scale deployments whilst ensuring analysts can trust and understand the AI's recommendations.
 
 ---
 
-**Current Version**: v4.0 - Production Hardened Release  
-**Last Updated**: 06 October 2025  
-**Development Status**: ✅ Production Ready - Security Hardened, Performance Optimised  
+**Current Version**: v4.1 - Confidence & Transparency Revolution  
+**Last Updated**: 10 October 2025  
+**Development Status**: ✅ Production Ready - Enhanced Confidence & Category Validation  
 **Performance**: 3-4x faster (10s vs 30-40s)  
 **Security**: API authentication, rate limiting, comprehensive validation  
-**Next Release**: v4.1 - Advanced Analytics & Monitoring
+**Confidence**: Category validation, transparent scoring, match reasoning  
+**Next Release**: v4.2 - Advanced Analytics & Monitoring
 
 ---
 
 ## 📚 Additional Documentation
 
+### Production & Security
 - **Production Readiness**: See `PRODUCTION_READINESS.md` for complete deployment checklist
 - **Rate Limiting**: See `RATE_LIMITING_CONFIG.md` for configuration guide
 - **Input Validation**: See `INPUT_VALIDATION.md` for validation rules and examples
-- **Environment Setup**: See `.env.example` for required configuration
+- **Security Checklist**: See `PRODUCTION_SECURITY_CHECKLIST.md` for security verification
+
+### Confidence & Transparency (NEW in v4.1)
+- **Category Validation**: See `CATEGORY_VALIDATION_FEATURE.md` for detailed implementation
+- **Quality Filtering Removal**: See `QUALITY_FILTERING_REMOVAL.md` for changes explanation
+- **Technical Implementation**: See `TECHNICAL_IMPLEMENTATION_GUIDE.md` for applying changes
+
+### Environment & Setup
+- **Environment Variables**: See `.env.example` for required configuration
+- **API Integration**: See `API_CLIENT_GUIDE.md` for client implementation

@@ -1,12 +1,15 @@
 """
-ITSM Triage API v4.0 - Production Hardened Release
+ITSM Triage API v4.1 - Confidence & Transparency Revolution
 
 A Flask-based REST API for intelligent IT service management incident triage using
 Azure OpenAI and Azure Cognitive Search with semantic vector search.
 
 Key Features:
 - Multi-step AI triage with prompt optimization (3-4x faster than v3)
-- Semantic vector search over incidents, problems, and knowledge articles
+- Pure vector similarity scoring without artificial multipliers
+- Category validation catching misleading semantic matches
+- Transparent confidence scoring with percentage bands
+- Enhanced match reasoning for analysts
 - Comprehensive input validation and error handling
 - API key authentication with development mode bypass
 - Rate limiting with configurable limits per endpoint
@@ -22,13 +25,14 @@ Security:
 - No internal error exposure in production
 - Secure localhost bypass only in development mode
 
-Performance:
+Performance & Transparency:
 - Optimized 5-step triage process
-- Core issue extraction before embedding generation
-- Concurrent search operations where possible
-- Configurable ThreadPoolExecutor for parallel processing
+- Pure vector similarity (@search.score) without quality filtering
+- Category validation preventing misleading matches
+- Clear confidence banding (Low/Medium/High + percentage)
+- Enhanced analyst guidance with match reasoning
 
-Version: 4.0
+Version: 4.1
 """
 # Standard library imports
 import os
@@ -391,6 +395,112 @@ def extract_referenced_documents(consolidated_records, max_docs=5):
     
     return referenced_doc_ids
 
+def calculate_confidence_band(search_score: float) -> str:
+    """
+    Calculate confidence band based on raw search score.
+    
+    Converts Azure Cognitive Search vector similarity scores into human-readable
+    confidence bands for triage decision-making.
+    
+    Args:
+        search_score: Raw @search.score from Azure Cognitive Search (0.0 to 1.0+)
+        
+    Returns:
+        Confidence band string: "Low", "Medium", or "High"
+        
+    Banding:
+        - Low: 50% or under (0.0 - 0.50)
+        - Medium: 51% to 69% (0.51 - 0.69)
+        - High: 70% or greater (0.70+)
+    """
+    # Convert to percentage for easier comparison
+    score_percentage = search_score * 100
+    
+    if score_percentage <= 50:
+        return "Low"
+    elif score_percentage <= 69:
+        return "Medium"
+    else:
+        return "High"
+
+def format_confidence_display(search_score: float, confidence_band: str) -> str:
+    """
+    Format confidence for analyst display with both band and percentage.
+    
+    Provides analysts with both categorical (High/Medium/Low) and precise
+    (percentage) confidence information for better decision-making.
+    
+    Args:
+        search_score: Raw @search.score from Azure Cognitive Search (0.0 to 1.0+)
+        confidence_band: Calculated confidence band (High/Medium/Low)
+        
+    Returns:
+        Formatted string like "High (80%)" or "Medium (65%)"
+        
+    Example:
+        format_confidence_display(0.796, "High") -> "High (80%)"
+    """
+    percentage = round(search_score * 100)
+    return f"{confidence_band} ({percentage}%)"
+
+def validate_category_match(ai_product: str, ai_issue: str, top_result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Validate if top search result matches AI's categorization.
+    
+    Cross-references the AI's triage categorization (product/issue) with the 
+    matched document's categories to assess match quality. This helps identify 
+    when high similarity scores are misleading (e.g., "website blocked" vs 
+    "gate access" both mention "access" but are categorically different).
+    
+    Args:
+        ai_product: Product category from AI triage
+        ai_issue: Issue category from AI triage
+        top_result: Top search result document
+        
+    Returns:
+        Dictionary with:
+        - category_match: bool (do categories align?)
+        - match_quality: str (excellent/good/weak/poor)
+        - mismatch_warning: str or None (warning message if applicable)
+        
+    Example:
+        AI says: Firewall/Network
+        Match says: Firewall/Network → excellent match
+        Match says: Access Control/Physical → poor match (different domain)
+    """
+    result_product = top_result.get('product', '').lower()
+    result_issue = top_result.get('issue_category', '').lower()
+    ai_product_lower = ai_product.lower()
+    ai_issue_lower = ai_issue.lower()
+    
+    # Check for matches
+    product_match = ai_product_lower in result_product or result_product in ai_product_lower
+    issue_match = ai_issue_lower in result_issue or result_issue in ai_product_lower
+    
+    # Determine match quality
+    if product_match and issue_match:
+        return {
+            'category_match': True,
+            'match_quality': 'excellent',
+            'mismatch_warning': None,
+            'details': f"Categories align: {ai_product}/{ai_issue}"
+        }
+    elif product_match or issue_match:
+        return {
+            'category_match': True,
+            'match_quality': 'good',
+            'mismatch_warning': None,
+            'details': f"Partial category match: {ai_product}/{ai_issue} vs {top_result.get('product')}/{top_result.get('issue_category')}"
+        }
+    else:
+        # Different categories - be skeptical
+        return {
+            'category_match': False,
+            'match_quality': 'weak',
+            'mismatch_warning': f"Category mismatch: Current issue is {ai_product}/{ai_issue}, but matched document is {top_result.get('product')}/{top_result.get('issue_category')}",
+            'details': f"Categories differ: {ai_product}/{ai_issue} vs {top_result.get('product')}/{top_result.get('issue_category')}"
+        }
+
 # ===========================
 # APPLICATION FACTORY
 # ===========================
@@ -553,14 +663,14 @@ def register_routes(app):
             return jsonify({
                 "status": "healthy",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "service": "ITSM Triage API v4.0 - Production Ready",
+                "service": "ITSM Triage API v4.1 - Confidence & Transparency",
                 "index_stats": stats
             })
         except Exception as e:
             return jsonify({
                 "status": "degraded",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "service": "ITSM Triage API v4.0 - Production Ready",
+                "service": "ITSM Triage API v4.1 - Confidence & Transparency",
                 "error": str(e)
             }), 500
 
@@ -698,18 +808,18 @@ def register_routes(app):
                 query_embedding=query_embedding,
                 top_k=triage_request.top_k,
                 days_back=None,  # No temporal filtering
-                min_confidence=constants.MIN_SEMANTIC_CONFIDENCE,
+                min_confidence=None,  # Don't filter on synthesis confidence - irrelevant for matching
                 data_quality=None  # Allow all quality levels
             )
 
-            # 2. Search for high-quality reference documents 
-            logger.info("Searching for reference documents")
+            # 2. Search for additional documents for context
+            logger.info("Searching for additional documents")
             reference_results = app.search_service.vector_search_with_temporal_filter(
                 query_embedding=query_embedding,
                 top_k=constants.MAX_SIMILAR_RECORDS,
                 days_back=None,
-                min_confidence=constants.MIN_REFERENCE_CONFIDENCE,
-                data_quality=constants.QUALITY_GOLD  # High quality only for references
+                min_confidence=None,  # Don't filter on synthesis confidence - irrelevant for matching
+                data_quality=None  # Don't filter on data quality - focus on vector similarity
             )
 
             # 3. Combine results using updated processing for INCIDENT and PROBLEM records
@@ -721,7 +831,8 @@ def register_routes(app):
             for i, record in enumerate(consolidated_records):
                 source_record = record.get('source_record', 'INCIDENT')
                 record_id = record.get('incident_id')
-                logger.info(f"  Record {i+1}: {record_id} ({source_record}) - Quality: {record.get('data_quality')}")
+                search_score = record.get('@search.score', 0)
+                logger.info(f"  Record {i+1}: {record_id} ({source_record}) - Score: {search_score:.3f}")
                 
                 # All records use the same resolution field
                 resolution = record.get('itil_resolution')
@@ -737,11 +848,32 @@ def register_routes(app):
                 record_id = result.get('incident_id')
                 logger.info(f"  Result {i+1}: {record_id} ({source_record}) "
                         f"(Score: {result.get('@search.score', 0):.3f}, "
-                        f"Quality: {result.get('data_quality', 'unknown')}, "
                         f"Age: {result.get('days_ago', 'unknown')} days)")
 
             # 4. Extract key insight from top result using updated logic
             key_insight_text, key_insight_source_id = extract_key_insight_from_records(consolidated_records)
+            
+            # Calculate confidence band from top search result
+            top_search_score = consolidated_records[0].get('@search.score', 0) if consolidated_records else 0
+            confidence_band = calculate_confidence_band(top_search_score)
+            confidence_display = format_confidence_display(top_search_score, confidence_band)
+            
+            # Extract match reasoning information
+            top_result = consolidated_records[0] if consolidated_records else None
+            match_reasoning = None
+            if top_result:
+                match_summary = top_result.get('clean_summary', '')
+                match_ticket_type = top_result.get('ticket_type', 'Record')
+                match_quality = top_result.get('data_quality', 'unknown')
+                match_reasoning = {
+                    'document_id': key_insight_source_id,
+                    'ticket_type': match_ticket_type,
+                    'summary': match_summary,
+                    'quality': match_quality,
+                    'score': top_search_score
+                }
+            
+            logger.info(f"Confidence Assessment: {confidence_display} (raw score: {top_search_score:.3f})")
 
             # 5. Generate AI response using ORIGINAL description for full context
             all_found_ids = set()
@@ -767,6 +899,56 @@ def register_routes(app):
 
             # Add referenced_documents to the AI response as array of individual strings
             ai_response["referenced_documents"] = referenced_doc_ids
+            
+            # Validate category alignment between AI triage and top match
+            category_validation = None
+            if top_result and ai_response.get('product') and ai_response.get('issue'):
+                category_validation = validate_category_match(
+                    ai_response['product'],
+                    ai_response['issue'],
+                    top_result
+                )
+                logger.info(f"Category Validation: {category_validation['match_quality']} - {category_validation['details']}")
+                
+                # Adjust confidence if categories don't match
+                if not category_validation['category_match'] and confidence_band == "High":
+                    confidence_band = "Medium"
+                    confidence_display = format_confidence_display(top_search_score, confidence_band)
+                    logger.warning(f"Confidence downgraded to Medium due to category mismatch")
+            
+            # Add confidence information to the response
+            ai_response["confidence"] = confidence_band
+            ai_response["confidence_display"] = confidence_display
+            ai_response["confidence_score_raw"] = round(top_search_score, 3)
+            if category_validation:
+                ai_response["category_match"] = category_validation['category_match']
+                ai_response["match_quality"] = category_validation['match_quality']
+            
+            # Build match reasoning for analyst
+            match_reasoning_html = ""
+            if match_reasoning:
+                similarity_desc = "very similar" if top_search_score >= 0.80 else "similar" if top_search_score >= 0.70 else "related"
+                
+                # Add category alignment info to reasoning
+                category_note = ""
+                if category_validation:
+                    if category_validation['category_match']:
+                        category_note = f" (categories align: {ai_response['product']}/{ai_response['issue']})"
+                    else:
+                        category_note = f" ⚠️ Note: Matched document is {top_result.get('product')}/{top_result.get('issue_category')}, different from current {ai_response['product']}/{ai_response['issue']} issue - treat with skepticism"
+                
+                match_reasoning_html = (
+                    f'<p><b>Match Reasoning:</b> This recommendation is based on {match_reasoning["ticket_type"]} '
+                    f'<b>{match_reasoning["document_id"]}</b>{category_note}, which had a {similarity_desc} issue: '
+                    f'"{match_reasoning["summary"][:120]}{"..." if len(match_reasoning["summary"]) > 120 else ""}".</p>\n'
+                )
+            
+            # Add confidence and reasoning to the suggested_resolution HTML
+            if ai_response.get("suggested_resolution"):
+                # Insert confidence and reasoning at the beginning
+                confidence_html = f'<p><b>Confidence:</b> {confidence_display}</p>\n'
+                prefix_html = confidence_html + match_reasoning_html
+                ai_response["suggested_resolution"] = prefix_html + ai_response["suggested_resolution"]
 
             # Add enhanced metadata
             end_time = datetime.now(timezone.utc)
@@ -775,7 +957,7 @@ def register_routes(app):
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "query_length": len(query_text),
                 "results_found": len(consolidated_records),
-                "api_version": "4.0-production-hardened",
+                "api_version": "4.1-confidence-transparency",
                 "processing_time_seconds": round(processing_time, 2),
                 "referenced_document_count": len(referenced_doc_ids),
                 "search_config": {
@@ -786,11 +968,7 @@ def register_routes(app):
                     "index_type": "Vector v2 - Full Records with Problems and Knowledge"
                 },
                 "result_quality": {
-                    "avg_confidence": sum(r.get('confidence_score', 0) for r in consolidated_records) / len(consolidated_records) if consolidated_records else 0,
-                    "quality_distribution": {
-                        quality: sum(1 for r in consolidated_records if r.get('data_quality') == quality)
-                        for quality in ['gold', 'silver', 'bronze']
-                    },
+                    "avg_search_score": round(sum(r.get('@search.score', 0) for r in consolidated_records) / len(consolidated_records), 3) if consolidated_records else 0,
                     "avg_age_days": sum(r.get('days_ago', 0) for r in consolidated_records if r.get('days_ago') is not None) / len([r for r in consolidated_records if r.get('days_ago') is not None]) if consolidated_records else None,
                     "record_type_distribution": {
                         "INCIDENT": sum(1 for r in consolidated_records if r.get('source_record', 'INCIDENT') == 'INCIDENT'),
@@ -814,7 +992,7 @@ def register_routes(app):
     @app.limiter.limit(os.getenv("RATE_LIMIT_SEARCH", constants.SEARCH_RATE_LIMIT))
     @require_api_key
     def search_recent_incidents():
-        """NEW: Search recent high-quality incidents and problems"""
+        """NEW: Search recent incidents and problems"""
         try:
             data = request.get_json()
             if not data:
@@ -857,8 +1035,8 @@ def register_routes(app):
                 query_embedding=query_embedding,
                 top_k=top_k,
                 days_back=days_back,
-                min_confidence=constants.MIN_SEMANTIC_CONFIDENCE,
-                data_quality=constants.QUALITY_GOLD
+                min_confidence=None,  # Don't filter on synthesis confidence
+                data_quality=None  # Don't filter on data quality - focus on vector similarity
             )
             
             formatted_results = []
@@ -981,11 +1159,11 @@ app = create_app()
 
 if __name__ == "__main__":
     print("\n" + "="*80, flush=True)
-    print("ITSM TRIAGE API v4.0 - PRODUCTION READY", flush=True)
+    print("ITSM TRIAGE API v4.1 - CONFIDENCE & TRANSPARENCY", flush=True)
     print("="*80, flush=True)
     
     logger.info(f"\n{'='*60}")
-    logger.info(f"ITSM Triage API v4.0 - Production Hardened Starting...")
+    logger.info(f"ITSM Triage API v4.1 - Confidence & Transparency Starting...")
     logger.info(f"Log Level: {log_level}")
     logger.info(f"Vector Index: {os.getenv('AZURE_SEARCH_VECTOR_INDEX', 'itsm-incidents-vector-v2')}")
     logger.info(f"{'='*60}\n")

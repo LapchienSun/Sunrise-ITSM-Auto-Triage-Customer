@@ -789,7 +789,10 @@ class AIService:
             "summary_rating": "good",
             "description_rating": "good",
             "alternative_description": "",
-            "suggested_resolution": "<p><b>Initial Response:</b> Provide information and guidance to address the user's request</p>",
+            "suggested_resolution": "<p><b>Confidence:</b> Low (0%)</p><p><b>Initial Response:</b> Provide information and guidance to address the user's request</p>",
+            "confidence": "Low",
+            "confidence_display": "Low (0%)",
+            "confidence_score_raw": 0.0,
             "source": call_source,
             "token_usage": {
                 "total_tokens": 100,
