@@ -87,11 +87,27 @@ def build_product_prompt(summary: str, description: str, type_selected: str,
     Returns:
         Formatted prompt string for product selection
     """
+    # Detect products from similar incidents - using 'product' field
     product_hints = []
+    logger = logging.getLogger(__name__)
+    mismatched_products = []
+
     for record in retrieved_records[:5]:
-        for tag in record.get('tags', []):
-            if tag in product_options:
-                product_hints.append(tag)
+        product = record.get('product')
+        record_id = record.get('incident_id', 'unknown')
+        if product:
+            if product in product_options:
+                product_hints.append(product)
+            else:
+                mismatched_products.append(f"{record_id}:'{product}'")
+
+    # Log results
+    if product_hints:
+        logger.info(f"Product hints from similar records: {list(set(product_hints))}")
+    else:
+        logger.info(f"No product hints found (0/{len(retrieved_records)} records matched taxonomy)")
+        if mismatched_products:
+            logger.warning(f"Products in search results don't match taxonomy: {mismatched_products[:3]}")
 
     if len(product_options) <= 10:
         product_list = f"""CONSTRAINT: For {type_selected}, you MUST select from ONLY these {len(product_options)} products:
@@ -328,24 +344,23 @@ def build_analysis_prompt(summary: str, description: str, type_selected: str,
                           key_insight_text: Optional[str] = None,
                           key_insight_source_id: Optional[str] = None) -> str:
     """
-    Root cause analysis, impact assessment, and initial response
-    Updated for Demo Vector v2 index - now includes INCIDENTS, SERVICE REQUESTS, PROBLEMS, and KNOWLEDGE records
-    
-    Args:
-        summary: Brief incident summary
-        description: Detailed incident description
-        type_selected: Previously selected type
-        product_selected: Previously selected product
-        issue_selected: Previously selected issue
-        priority: Calculated priority (e.g., "1. Critical", "2. High")
-        environment: Test or Live environment
-        retrieved_records: List of similar records from vector search (all types)
-        key_insight_text: Optional key technical detail from top match
-        key_insight_source_id: Optional ID of the record containing key insight
-        
-    Returns:
-        Formatted prompt string for root cause analysis and initial response
+    Root cause analysis, impact assessment, and initial response with confidence-aware language
+    REFACTORED: Clearer structure, reduced emphasis, consolidated grounding rules, hypothesis language
     """
+    logger = logging.getLogger(__name__)
+    
+    # Determine confidence level from top search result
+    top_search_score = retrieved_records[0].get('@search.score', 0) if retrieved_records else 0
+    is_high_confidence = top_search_score >= 0.75
+    
+    if is_high_confidence:
+        language_mode = "definitive"
+        logger.info(f"Analysis using definitive language (top score: {top_search_score:.3f})")
+    else:
+        language_mode = "hypothesis"
+        logger.info(f"Analysis using hypothesis language (top score: {top_search_score:.3f})")
+    
+    # Process retrieved records (keep existing logic)
     resolution_hints = []
 
     # Process retrieved records - now includes INCIDENTS, SERVICE REQUESTS, PROBLEMS, and KNOWLEDGE
@@ -399,6 +414,29 @@ def build_analysis_prompt(summary: str, description: str, type_selected: str,
 
     prompt_sections.append(
         f"IMPORTANT CONTEXT: This is classified as: {type_selected}\n")
+
+    # === NEW: Add hypothesis language guidance based on confidence ===
+    if language_mode == "hypothesis":
+        language_guidance = """
+━━━ CRITICAL: USE HYPOTHESIS LANGUAGE ━━━
+Match confidence is below 0.75. You MUST use tentative, hypothesis-based language:
+
+Required phrasing:
+• "appears to be caused by" or "most likely caused by" (NOT "was caused by")
+• "This suggests" or "This indicates" (NOT "This is")
+• "Based on similar incident [ID], this appears to be..."
+• Frame as preliminary assessment requiring validation
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+    else:
+        language_guidance = """
+━━━ HIGH CONFIDENCE MATCH ━━━
+Use confident language based on strong similarity to known resolution.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+    prompt_sections.append(language_guidance)
 
     # Get ticket type for dynamic instruction text
     key_insight_ticket_type = "incident"  # Default
@@ -497,18 +535,26 @@ Return JSON:
 # Step 5a: Resolution Content Generation (Focused)
 def build_resolution_content_prompt(incident_details: dict, retrieved_records: list) -> str:
     """
-    Generate comprehensive resolution content with implementation steps
-    
-    Args:
-        incident_details: Dictionary containing all classification and analysis results
-        retrieved_records: List of similar records from vector search (all types)
-        
-    Returns:
-        Formatted prompt string for resolution content generation
+    Resolution content generation with merit-based approach and confidence-aware language
+    REFACTORED: Consolidated rules, clearer structure, hypothesis language for low confidence
     """
     logger = logging.getLogger(__name__)
     best_practices = []
     knowledge_articles = []  # Track knowledge articles separately for context
+    
+    # Determine if this is high confidence or hypothesis-based
+    is_high_confidence = incident_details.get('high_confidence_match') is not None
+    high_confidence_score = incident_details['high_confidence_match'].get('@search.score', 0) if is_high_confidence else 0
+    
+    # Set language tone based on confidence
+    if is_high_confidence and high_confidence_score >= 0.75:
+        language_mode = "definitive"
+        root_cause_label = "Root Cause (Preliminary)"
+        logger.info(f"Using definitive language (high confidence: {high_confidence_score:.3f})")
+    else:
+        language_mode = "hypothesis"
+        root_cause_label = "Root Cause (Leading Hypothesis)"
+        logger.info(f"Using hypothesis language (confidence: {high_confidence_score:.3f})")
 
     # Process retrieved records - treat all equally based on search ranking
     for record in retrieved_records[:5]:
@@ -607,9 +653,52 @@ Scope: {incident_details['scope_of_impact']}
             prompt_text += "\nNo similar resolutions found in the system.\n"
 
     prompt_text += f"""
-CRITICAL CONSTRAINT: You MUST only reference document IDs (e.g., INC12345, INC67890, PRB001234, KNB000126) that are explicitly provided in the sections above.
+You MUST only reference document IDs (e.g., SUN12345, PRB001234, KB000126) explicitly provided above.
 
-# --- START: MERIT-BASED RESOLUTION GENERATION RULES ---
+# === NEW: Consolidated resolution generation rules with confidence-aware language ===
+
+# Add language guidance based on confidence level
+"""
+
+    # Add language guidance based on confidence level
+    if language_mode == "hypothesis":
+        language_guidance = """
+━━━ CRITICAL: USE HYPOTHESIS LANGUAGE ━━━
+This is a Medium/Low confidence match. You MUST use tentative, hypothesis-based language:
+
+Required phrasing:
+• "appears to be caused by" or "most likely caused by" (NOT "was caused by")
+• "This suggests" or "This indicates" (NOT "This is")
+• "Leading hypothesis:" or "Preliminary assessment:"
+• "Consider [action]" or "Recommended: [action]" (NOT directive "Do [action]")
+• "If hypothesis is confirmed" in resolution summary
+• "Suggested investigation path" instead of "Implementation plan"
+
+Frame everything as investigation and hypothesis validation, NOT as definitive solution.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+AVOID REPETITION:
+• The Issue Summary, Root Cause, and Resolution Summary already contain technical details
+• In implementation steps, reference these concisely instead of repeating full explanations
+• Example: Instead of "Add the intranet site URL to the CSRF whitelist configuration file"
+  Use: "Add the missing URL to the CSRF whitelist" (technical details already stated above)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+    else:
+        language_guidance = """
+━━━ HIGH CONFIDENCE MATCH ━━━
+Use confident, definitive language based on strong similarity to known resolution.
+
+AVOID REPETITION:
+• Keep implementation steps concise - reference earlier sections instead of repeating
+• If Issue Summary already explains the technical cause, don't repeat verbatim in steps
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+
+    prompt_text += f"""
+{language_guidance}
+
+━━━ RESOLUTION GENERATION APPROACH ━━━
 RESOLUTION GENERATION RULES:
 1.  **RELEVANCE-BASED APPROACH**: Use the highest-scoring search results as your primary source,
     regardless of record type. The semantic search has determined what's most relevant to the user's query.
@@ -640,7 +729,12 @@ RESOLUTION GENERATION RULES:
 Generate these specific elements using UK British English spelling throughout:
 1. implementation_steps: List matching the source resolution structure (convert past tense verbs to present imperative - "identified" becomes "identify", "corrected" becomes "correct", "executed" becomes "execute") IMPORTANT: If the source content already contains proper numbered steps (1., 2., 3., etc.), preserve them as single items rather than breaking them apart. For example, if a knowledge article has "1. Navigate to X 2. Click Y 3. Select Z", keep those as complete step descriptions rather than splitting into separate array elements.
 2. issue_summary: Clear technical description of the problem.
-3. known_workarounds: From similar incidents or "None available"
+3. **known_workarounds**: Think creatively about workarounds:
+   - Alternative access methods (different URLs, browsers, devices)
+   - Temporary bypasses (manual processes, configuration changes)
+   - User-actionable workarounds (settings they can change themselves)
+   - Escalation paths if no workaround exists
+   - If truly none: "No workarounds identified. Direct resolution required."
 4. diagnostic_steps: Key troubleshooting steps to verify the issue
 5. resolution_summary: Brief summary for handover/documentation.
 
@@ -648,7 +742,7 @@ Return JSON:
 {{
 "implementation_steps": ["Detailed step 1", "Detailed step 2", "Detailed step 3", "Detailed step 4", "Detailed step 5"],
 "issue_summary": "technical summary",
-"known_workarounds": "workarounds from similar incidents or None available",
+"known_workarounds": "specific workarounds with details, or 'No workarounds identified. Direct resolution required.'",
 "diagnostic_steps": "key troubleshooting steps",
 "resolution_summary": "summary for handover"
 }}"""
@@ -660,15 +754,19 @@ Return JSON:
 def format_resolution_html(incident_details: dict, resolution_content: dict) -> dict:
     """
     Format the resolution content into HTML - Done in Python, not AI.
-    
-    Args:
-        incident_details: Dictionary containing all classification and analysis results
-        resolution_content: Dictionary with implementation steps and resolution details
-        
-    Returns:
-        Dictionary containing formatted HTML strings for implementation plan,
-        suggested resolution, clarifying questions, and referenced documents
+    Uses confidence-aware labels for root cause based on match quality.
     """
+    # Determine root cause label based on confidence
+    is_high_confidence = incident_details.get('high_confidence_match') is not None
+    high_confidence_score = incident_details['high_confidence_match'].get('@search.score', 0) if is_high_confidence else 0
+    
+    if is_high_confidence and high_confidence_score >= 0.75:
+        root_cause_label = "Root Cause (Preliminary)"
+        implementation_label = "Implementation Plan"
+    else:
+        root_cause_label = "Root Cause (Leading Hypothesis)"
+        implementation_label = "Suggested Investigation Path"
+    
     implementation_html = "<ol>"
     for step in resolution_content.get('implementation_steps', []):
         # Remove double numbering - strip leading "1. ", "2. " etc.
@@ -687,16 +785,16 @@ def format_resolution_html(incident_details: dict, resolution_content: dict) -> 
         resolution_content.get('referenced_documents', []))
 
     # UPDATED: Removed Initial Analyst Actions and Priority Justification,
-    # Added Implementation Plan and Clarifying Questions
+    # Added Implementation Plan and Clarifying Questions with confidence-aware labels
     suggested_html = f"""<p><b>Issue Summary:</b> {resolution_content.get('issue_summary', 'Technical issue requiring investigation')}</p>
-<p><b>Root Cause (Preliminary):</b> {incident_details.get('root_cause_preliminary', 'To be determined')}</p>
+<p><b>{root_cause_label}:</b> {incident_details.get('root_cause_preliminary', 'To be determined')}</p>
 <p><b>Scope of Impact:</b> {incident_details.get('scope_of_impact', 'To be assessed')}</p>
 <p><b>Clarifying Questions:</b></p>
 {questions_html}
 <p><b>Diagnostic Steps:</b> {resolution_content.get('diagnostic_steps', 'See implementation plan for diagnostic steps')}</p>
-<p><b>Implementation Plan:</b></p>
+<p><b>{implementation_label}:</b></p>
 {implementation_html}
-<p><b>Known Workarounds:</b> {resolution_content.get('known_workarounds', 'None available')}</p>
+<p><b>Possible Workarounds:</b> {resolution_content.get('known_workarounds', 'No workarounds identified. Direct resolution required.')}</p>
 <p><b>Resolution Summary:</b> {resolution_content.get('resolution_summary', 'Follow implementation plan for resolution')}</p>
 <p><b>Related Records:</b> {related_records_text}</p>"""
 

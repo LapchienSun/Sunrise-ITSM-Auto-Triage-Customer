@@ -51,6 +51,40 @@ HIGH_CONFIDENCE_THRESHOLD = 0.70
 # MIN_REFERENCE_CONFIDENCE = 0.80  # DEPRECATED - do not use
 
 # ===========================
+# SIMILARITY SCORE THRESHOLDS BY SOURCE TYPE
+# ===========================
+# These thresholds filter search results based on vector similarity (@search.score)
+# to ensure only high-quality matches are presented to users
+#
+# Incidents: More lenient threshold due to large volume of varied descriptions
+# Problems & Knowledge: Higher threshold as they represent definitive solutions
+#
+# Note: These are configurable via environment variables for fine-tuning
+
+import os
+
+# Incident threshold - results below this are flagged as low confidence but still included
+DEFAULT_INCIDENT_THRESHOLD = 0.65
+
+# Problem threshold - results at or below this are excluded completely (strict greater-than check)
+DEFAULT_PROBLEM_THRESHOLD = 0.74
+
+# Knowledge threshold - results at or below this are excluded completely (strict greater-than check)
+DEFAULT_KNOWLEDGE_THRESHOLD = 0.74
+
+def get_incident_threshold() -> float:
+    """Get incident confidence threshold from environment or default"""
+    return float(os.getenv("INCIDENT_THRESHOLD", str(DEFAULT_INCIDENT_THRESHOLD)))
+
+def get_problem_threshold() -> float:
+    """Get problem confidence threshold from environment or default"""
+    return float(os.getenv("PROBLEM_THRESHOLD", str(DEFAULT_PROBLEM_THRESHOLD)))
+
+def get_knowledge_threshold() -> float:
+    """Get knowledge confidence threshold from environment or default"""
+    return float(os.getenv("KNOWLEDGE_THRESHOLD", str(DEFAULT_KNOWLEDGE_THRESHOLD)))
+
+# ===========================
 # SEARCH RESULT LIMITS
 # ===========================
 

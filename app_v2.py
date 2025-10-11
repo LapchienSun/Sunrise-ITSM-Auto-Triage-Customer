@@ -501,6 +501,107 @@ def validate_category_match(ai_product: str, ai_issue: str, top_result: Dict[str
             'details': f"Categories differ: {ai_product}/{ai_issue} vs {top_result.get('product')}/{top_result.get('issue_category')}"
         }
 
+def apply_confidence_thresholds(consolidated_records: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[str]]:
+    """
+    Apply confidence thresholds to search results based on source record type.
+    
+    Filters search results according to minimum confidence thresholds to ensure
+    only high-quality matches are presented to users:
+    
+    - INCIDENTS (>= 0.65): Below threshold are flagged as low confidence but still included
+    - PROBLEMS (> 0.74): Below threshold are completely excluded
+    - KNOWLEDGE (> 0.74): Below threshold are completely excluded
+    
+    Thresholds are configurable via environment variables:
+    - INCIDENT_THRESHOLD (default: 0.65)
+    - PROBLEM_THRESHOLD (default: 0.74)  
+    - KNOWLEDGE_THRESHOLD (default: 0.74)
+    
+    Args:
+        consolidated_records: List of search results with @search.score and source_record
+        
+    Returns:
+        Tuple of (filtered_records, low_confidence_warnings)
+        - filtered_records: Records meeting threshold criteria
+        - low_confidence_warnings: List of warning messages for low-confidence incidents
+        
+    Example:
+        Incident with score 0.60 → included with warning "below minimum confidence threshold"
+        Problem with score 0.72 → excluded completely
+        Knowledge with score 0.80 → included normally
+    """
+    incident_threshold = constants.get_incident_threshold()
+    problem_threshold = constants.get_problem_threshold()
+    knowledge_threshold = constants.get_knowledge_threshold()
+    
+    logger.info(f"Applying confidence thresholds: Incidents >= {incident_threshold}, "
+                f"Problems > {problem_threshold}, Knowledge > {knowledge_threshold}")
+    
+    filtered_records = []
+    low_confidence_warnings = []
+    excluded_count = {'PROBLEM': 0, 'KNOWLEDGE': 0}
+    low_confidence_count = 0
+    
+    for record in consolidated_records:
+        search_score = record.get('@search.score', 0)
+        source_record = record.get('source_record', 'INCIDENT')
+        record_id = record.get('incident_id', 'Unknown')
+        
+        if source_record == 'PROBLEM':
+            # Problems must have score STRICTLY GREATER THAN threshold
+            if search_score > problem_threshold:
+                filtered_records.append(record)
+                logger.debug(f"[OK] Problem {record_id} included (score: {search_score:.3f} > {problem_threshold})")
+            else:
+                excluded_count['PROBLEM'] += 1
+                logger.info(f"[EXCLUDED] Problem {record_id} excluded (score: {search_score:.3f} <= {problem_threshold})")
+                
+        elif source_record == 'KNOWLEDGE':
+            # Knowledge must have score STRICTLY GREATER THAN threshold
+            if search_score > knowledge_threshold:
+                filtered_records.append(record)
+                logger.debug(f"[OK] Knowledge {record_id} included (score: {search_score:.3f} > {knowledge_threshold})")
+            else:
+                excluded_count['KNOWLEDGE'] += 1
+                logger.info(f"[EXCLUDED] Knowledge {record_id} excluded (score: {search_score:.3f} <= {knowledge_threshold})")
+                
+        else:  # INCIDENT (or unspecified, treated as incident)
+            # Incidents always included, but flagged if below threshold
+            filtered_records.append(record)
+            
+            if search_score < incident_threshold:
+                low_confidence_count += 1
+                warning = (f"Incident {record_id} has similarity score of {search_score:.0%} "
+                          f"which is below the minimum confidence threshold of {incident_threshold:.0%}. "
+                          f"This match should be treated with caution and used only as general guidance.")
+                low_confidence_warnings.append(warning)
+                # Mark record for AI awareness
+                record['low_confidence'] = True
+                logger.warning(f"[LOW CONFIDENCE] Incident {record_id} below threshold (score: {search_score:.3f} < {incident_threshold}) - "
+                             f"included with low confidence warning")
+            else:
+                logger.debug(f"[OK] Incident {record_id} included (score: {search_score:.3f} >= {incident_threshold})")
+    
+    # Log summary
+    original_count = len(consolidated_records)
+    filtered_count = len(filtered_records)
+    total_excluded = excluded_count['PROBLEM'] + excluded_count['KNOWLEDGE']
+    
+    logger.info(f"Threshold Filtering Summary:")
+    logger.info(f"   Original records: {original_count}")
+    logger.info(f"   Filtered records: {filtered_count}")
+    logger.info(f"   Excluded Problems: {excluded_count['PROBLEM']}")
+    logger.info(f"   Excluded Knowledge: {excluded_count['KNOWLEDGE']}")
+    logger.info(f"   Low-confidence Incidents: {low_confidence_count}")
+    
+    if total_excluded > 0:
+        logger.warning(f"WARNING: {total_excluded} record(s) excluded for not meeting confidence thresholds")
+    
+    if low_confidence_count > 0:
+        logger.warning(f"WARNING: {low_confidence_count} incident(s) flagged as low confidence")
+    
+    return filtered_records, low_confidence_warnings
+
 # ===========================
 # APPLICATION FACTORY
 # ===========================
@@ -827,12 +928,18 @@ def register_routes(app):
             
             # Take top results
             consolidated_records = consolidated_records[:triage_request.top_k]
-            logger.info("CONSOLIDATED RECORDS FOR AI:")
+
+            # 3a. Apply confidence thresholds by source type
+            # This filters out low-confidence Problems/Knowledge and flags low-confidence Incidents
+            consolidated_records, low_confidence_warnings = apply_confidence_thresholds(consolidated_records)
+            
+            logger.info("CONSOLIDATED RECORDS FOR AI (after threshold filtering):")
             for i, record in enumerate(consolidated_records):
                 source_record = record.get('source_record', 'INCIDENT')
                 record_id = record.get('incident_id')
                 search_score = record.get('@search.score', 0)
-                logger.info(f"  Record {i+1}: {record_id} ({source_record}) - Score: {search_score:.3f}")
+                low_conf_flag = " [LOW CONFIDENCE]" if record.get('low_confidence') else ""
+                logger.info(f"  Record {i+1}: {record_id} ({source_record}) - Score: {search_score:.3f}{low_conf_flag}")
                 
                 # All records use the same resolution field
                 resolution = record.get('itil_resolution')
@@ -901,20 +1008,29 @@ def register_routes(app):
             ai_response["referenced_documents"] = referenced_doc_ids
             
             # Validate category alignment between AI triage and top match
+            # NOTE: Category validation only applies to INCIDENT records
+            # Problems and Knowledge are curated solutions with high thresholds - trust semantic match
             category_validation = None
             if top_result and ai_response.get('product') and ai_response.get('issue'):
-                category_validation = validate_category_match(
-                    ai_response['product'],
-                    ai_response['issue'],
-                    top_result
-                )
-                logger.info(f"Category Validation: {category_validation['match_quality']} - {category_validation['details']}")
+                top_result_source = top_result.get('source_record', 'INCIDENT')
                 
-                # Adjust confidence if categories don't match
-                if not category_validation['category_match'] and confidence_band == "High":
-                    confidence_band = "Medium"
-                    confidence_display = format_confidence_display(top_search_score, confidence_band)
-                    logger.warning(f"Confidence downgraded to Medium due to category mismatch")
+                # Only perform category validation for INCIDENT records
+                if top_result_source == 'INCIDENT':
+                    category_validation = validate_category_match(
+                        ai_response['product'],
+                        ai_response['issue'],
+                        top_result
+                    )
+                    logger.info(f"Category Validation (INCIDENT): {category_validation['match_quality']} - {category_validation['details']}")
+                    
+                    # Adjust confidence if categories don't match
+                    if not category_validation['category_match'] and confidence_band == "High":
+                        confidence_band = "Medium"
+                        confidence_display = format_confidence_display(top_search_score, confidence_band)
+                        logger.warning(f"Confidence downgraded to Medium due to category mismatch")
+                else:
+                    logger.info(f"Category validation skipped for {top_result_source} record (trusted based on high threshold)")
+                # For PROBLEM/KNOWLEDGE: Skip validation entirely - trust high threshold match
             
             # Add confidence information to the response
             ai_response["confidence"] = confidence_band
@@ -929,9 +1045,11 @@ def register_routes(app):
             if match_reasoning:
                 similarity_desc = "very similar" if top_search_score >= 0.80 else "similar" if top_search_score >= 0.70 else "related"
                 
-                # Add category alignment info to reasoning
+                # Add category alignment info to reasoning (ONLY for INCIDENT records)
+                # Problems and Knowledge are trusted based on high threshold - no category note needed
                 category_note = ""
                 if category_validation:
+                    # category_validation only exists for INCIDENT records now
                     if category_validation['category_match']:
                         category_note = f" (categories align: {ai_response['product']}/{ai_response['issue']})"
                     else:
@@ -947,7 +1065,22 @@ def register_routes(app):
             if ai_response.get("suggested_resolution"):
                 # Insert confidence and reasoning at the beginning
                 confidence_html = f'<p><b>Confidence:</b> {confidence_display}</p>\n'
-                prefix_html = confidence_html + match_reasoning_html
+                
+                # Add confidence warning ONLY if the top match (the one being used) is below threshold
+                # Don't show warning just because other lower-ranked matches were excluded
+                low_confidence_html = ""
+                if low_confidence_warnings and top_result and top_result.get('low_confidence'):
+                    # Use the actual confidence band in the warning (Medium, Low, etc.)
+                    low_confidence_html = f'<p><b>⚠️ {confidence_band} Confidence Warning:</b> '
+                    low_confidence_html += 'The search did not meet the minimum level of confidence for incidents. '
+                    low_confidence_html += 'The suggested solution should be treated with care and used only as general guidance, '
+                    low_confidence_html += 'not as a definitive resolution.</p>\n'
+                    logger.info(f"Adding {confidence_band.lower()}-confidence warning to resolution (top match below threshold)")
+                elif low_confidence_warnings and top_result and not top_result.get('low_confidence'):
+                    # Log that other matches were low confidence but top match is good
+                    logger.info(f"Low confidence matches exist ({len(low_confidence_warnings)}), but top match is above threshold - no warning displayed")
+                
+                prefix_html = confidence_html + low_confidence_html + match_reasoning_html
                 ai_response["suggested_resolution"] = prefix_html + ai_response["suggested_resolution"]
 
             # Add enhanced metadata
