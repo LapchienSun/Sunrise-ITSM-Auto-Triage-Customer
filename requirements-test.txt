@@ -1,0 +1,20 @@
+# Test dependencies for ITSM Triage API
+# Install with: pip install -r requirements-test.txt
+
+# Testing framework
+pytest>=7.4.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.1
+
+# HTTP testing
+pytest-flask>=1.2.0
+
+# Mocking and fixtures
+responses>=0.23.0
+
+# Test utilities
+faker>=19.3.0
+
+# All production dependencies
+-r requirements.txt
+

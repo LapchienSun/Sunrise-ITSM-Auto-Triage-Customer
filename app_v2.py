@@ -408,17 +408,17 @@ def calculate_confidence_band(search_score: float) -> str:
     Returns:
         Confidence band string: "Low", "Medium", or "High"
         
-    Banding:
-        - Low: 50% or under (0.0 - 0.50)
-        - Medium: 51% to 69% (0.51 - 0.69)
-        - High: 70% or greater (0.70+)
+    Banding (aligned with incident threshold and data distribution):
+        - Low: Under 63% (0.0 - 0.629) - Below quality threshold, needs caution
+        - Medium: 63% to 74% (0.63 - 0.749) - Working range, useful guidance
+        - High: 75% or greater (0.75+) - Strong match, high confidence
     """
     # Convert to percentage for easier comparison
     score_percentage = search_score * 100
     
-    if score_percentage <= 50:
+    if score_percentage < 63:
         return "Low"
-    elif score_percentage <= 69:
+    elif score_percentage < 75:
         return "Medium"
     else:
         return "High"
@@ -1248,6 +1248,13 @@ def register_error_handlers(app):
     @app.errorhandler(404)
     def not_found(error):
         return jsonify({"error": "Not Found", "message": "Resource not found"}), 404
+    
+    @app.errorhandler(405)
+    def method_not_allowed(error):
+        return jsonify({
+            "error": "Method Not Allowed",
+            "message": "The HTTP method is not allowed for this endpoint"
+        }), 405
     
     @app.errorhandler(413)
     def request_too_large(error):

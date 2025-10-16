@@ -64,7 +64,7 @@ HIGH_CONFIDENCE_THRESHOLD = 0.70
 import os
 
 # Incident threshold - results below this are flagged as low confidence but still included
-DEFAULT_INCIDENT_THRESHOLD = 0.65
+DEFAULT_INCIDENT_THRESHOLD = 0.63
 
 # Problem threshold - results at or below this are excluded completely (strict greater-than check)
 DEFAULT_PROBLEM_THRESHOLD = 0.74
